@@ -1,21 +1,19 @@
-from collections import namedtuple
-import numpy as np
-import torch
-import tqdm
-from PIL import Image
 import inspect
+from collections import namedtuple
+
 import k_diffusion.sampling
 import ldm.models.diffusion.ddim
 import ldm.models.diffusion.plms
+import numpy as np
+import torch
+from PIL import Image
 
 import src_plugins
-import src_plugins.sd1111_plugin.sd_paths
-import prompt_parser, devices
-
-import SDPlugin as SDPlugin
-# from modules.stable_diffusion_auto2222.processing import store_latent
-from src_plugins.sd1111_plugin.SDJob import store_latent
-# from old.stable_diffusion_auto1111.SDSampler_K import sampler_extra_params
+import src_plugins.sd1111_plugin.SDOptions
+import src_plugins.sd1111_plugin.SDState
+from src_plugins.sd1111_plugin import prompt_parser, sd_paths
+from src_core.lib import devices
+from src_plugins.sd1111_plugin.sd_job import decode_first_stage, store_latent
 
 SamplerData = namedtuple('SamplerData', ['name', 'constructor', 'aliases', 'options'])
 
@@ -48,7 +46,7 @@ def create_sampler(id, model):
     for s in samplers:
         if id == s.name or id in s.aliases:
             sampler = s.constructor(model)
-            src_plugins.sd1111_plugin.sdpaths.config = s
+            sd_paths.config2 = s
 
             return sampler
 
@@ -57,17 +55,17 @@ def create_sampler(id, model):
 
 def setup_img2img_steps(p, steps=None, fixed_steps=False):
     if fixed_steps or steps is not None:
-        steps = int((steps or p.steps) / min(p.denoising_strength, 0.999)) if p.denoising_strength > 0 else 0
+        steps = int((steps or p.steps) / min(p.chg, 0.999)) if p.chg > 0 else 0
         t_enc = p.steps - 1
     else:
         steps = p.steps
-        t_enc = int(min(p.denoising_strength, 0.999) * steps)
+        t_enc = int(min(p.chg, 0.999) * steps)
 
     return steps, t_enc
 
 
 def single_sample_to_image(sample):
-    x_sample = src_plugins.stable_diffusion_2222.processing.decode_first_stage(SDPlugin.sdmodel, sample.unsqueeze(0))[0]
+    x_sample = decode_first_stage(src_plugins.sd1111_plugin.SDState.sdmodel, sample.unsqueeze(0))[0]
     x_sample = torch.clamp((x_sample + 1.0) / 2.0, min=0.0, max=1.0)
     x_sample = 255. * np.moveaxis(x_sample.cpu().numpy(), 0, 2)
     x_sample = x_sample.astype(np.uint8)
@@ -258,7 +256,7 @@ class CFGDenoiser(torch.nn.Module):
         if tensor.shape[1] == uncond.shape[1]:
             cond_in = torch.cat([tensor, uncond])
 
-            if SDPlugin.batch_cond_uncond:
+            if src_plugins.sd1111_plugin.SDOptions.batch_cond_uncond:
                 x_out = self.inner_model(x_in, sigma_in, cond={"c_crossattn": [cond_in], "c_concat": [image_cond_in]})
             else:
                 x_out = torch.zeros_like(x_in)
@@ -268,7 +266,7 @@ class CFGDenoiser(torch.nn.Module):
                     x_out[a:b] = self.inner_model(x_in[a:b], sigma_in[a:b], cond={"c_crossattn": [cond_in[a:b]], "c_concat": [image_cond_in[a:b]]})
         else:
             x_out = torch.zeros_like(x_in)
-            batch_size = batch_size * 2 if SDPlugin.batch_cond_uncond else batch_size
+            batch_size = batch_size * 2 if src_plugins.sd1111_plugin.SDOptions.batch_cond_uncond else batch_size
             for batch_offset in range(0, tensor.shape[0], batch_size):
                 a = batch_offset
                 b = min(a + batch_size, tensor.shape[0])
@@ -363,7 +361,6 @@ class KDiffusionSampler:
         return res
 
     def initialize(self, p):
-        from src_plugins.sd1111_plugin.options import opts
         self.model_wrap_cfg.mask = p.mask if hasattr(p, 'mask') else None
         self.model_wrap_cfg.nmask = p.nmask if hasattr(p, 'nmask') else None
         self.model_wrap.progress_i = 0
@@ -388,7 +385,7 @@ class KDiffusionSampler:
 
         if p.sampler_noise_scheduler_override:
             sigmas = p.sampler_noise_scheduler_override(steps)
-        elif self.config is not None and self.config.options.get('scheduler', None) == 'karras':
+        elif self.config is not None and self.config.options.get_plug('scheduler', None) == 'karras':
             sigmas = k_diffusion.sampling.get_sigmas_karras(n=steps, sigma_min=0.1, sigma_max=10, device=devices.device)
         else:
             sigmas = self.model_wrap.get_sigmas(steps)
@@ -426,7 +423,7 @@ class KDiffusionSampler:
 
         if p.sampler_noise_scheduler_override:
             sigmas = p.sampler_noise_scheduler_override(steps)
-        elif self.config is not None and self.config.options.get('scheduler', None) == 'karras':
+        elif self.config is not None and self.config.options.get_plug('scheduler', None) == 'karras':
             sigmas = k_diffusion.sampling.get_sigmas_karras(n=steps, sigma_min=0.1, sigma_max=10, device=devices.device)
         else:
             sigmas = self.model_wrap.get_sigmas(steps)

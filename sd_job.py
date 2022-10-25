@@ -1,4 +1,3 @@
-import json
 import math
 import random
 from typing import Any, Dict
@@ -7,65 +6,61 @@ import numpy as np
 import torch
 from PIL import Image, ImageFilter, ImageOps
 
-import devices
-import images as images
-import modelsplit
-import masking
-import src_plugins
-import prompt_parser
-import SDPlugin as SDPlugin
-from src_core.jobs import JobParams
-
+from src_core import plugins
 # some of those options should not be changed at all because they would break the model, so I removed them from options.
+from src_plugins.sd1111_plugin import images, masking, modelsplit, prompt_parser, sd_hijack, SDOptions, SDState
+from src_core.lib import devices
+from src_plugins.sd1111_plugin.options import opts
+from src_core.classes.prompt_job import prompt_job
 
 opt_C = 4
 opt_f = 8
 eta_noise_seed_delta = 0
 
-class SDJob(JobParams):
+
+class sd_job(prompt_job):
     def __init__(self,
-                 prompt: str = "",
                  sampler: int = 'euler-a',
                  seed: int = -1,
                  subseed: int = -1,
-                 subseed_strength: float = 0,
+                 subseed_force: float = 0,
                  seed_resize_from_h: int = -1,
                  seed_resize_from_w: int = -1,
                  seed_enable_extras: bool = True,
                  batch_size: int = 1,
-                 steps: int = 50,
-                 cfg: float = 7.0,
-                 width: int = 512,
-                 height: int = 512,
+                 steps: int = 22,
+                 cfg: float = 7,
+                 w: int = 512,
+                 h: int = 512,
+                 chg: float = 0.5,
                  tiling: bool = False,
                  extra_generation_params: Dict[Any, Any] = None,
                  overlay_images: Any = None,
                  promptneg: str = None,
                  eta: float = None,
-                 ddim_discretize: str = 'uniform', # [ 'uniform', 'quad' ]
+                 ddim_discretize: str = 'uniform',  # [ 'uniform', 'quad' ]
                  s_churn: float = 0.0,
                  s_tmax: float = None,
                  s_tmin: float = 0.0,
-                 s_noise: float = 1.0):
-        super(SDJob, self).__init__()
-        self.prompt: str = prompt
+                 s_noise: float = 1.0, **kwargs):
+        super(sd_job, self).__init__(**kwargs)
         self.promptneg: str = promptneg or ""
-        self.seed: int = seed
+        self.seed: int = int(seed)
         self.subseed: int = subseed
-        self.subseed_strength: float = subseed_strength
+        self.subseed_strength: float = subseed_force
         self.seed_resize_from_h: int = seed_resize_from_h
         self.seed_resize_from_w: int = seed_resize_from_w
-        self.width: int = width
-        self.height: int = height
-        self.cfg: float = cfg
+        self.width: int = int(w)
+        self.height: int = int(h)
+        self.cfg: float = float(cfg)
         self.sampler_id: int = sampler
         self.batch_size: int = batch_size
-        self.steps: int = steps
-        self.tiling: bool = tiling
+        self.steps: int = int(steps)
+        self.tiling: bool = bool(tiling)
         self.extra_generation_params: dict = extra_generation_params or {}
         self.overlay_images = overlay_images
         self.eta = eta
-        self.denoising_strength: float = 0
+        self.chg: float = chg
         self.sampler_noise_scheduler_override = None
         self.ddim_discretize = ddim_discretize
         self.s_churn = s_churn
@@ -90,23 +85,23 @@ class SDJob(JobParams):
         raise NotImplementedError()
 
 
-class SDJob_txt(SDJob):
+class sd_txt(sd_job):
     def __init__(self,
                  enable_hr: bool = False,
-                 denoising_strength: float = 0.75,
-                 firstphase_width: int = 0,
-                 firstphase_height: int = 0,
+                 chg: float = 0.75,  # short for "change", also known as denoising strength
+                 w1: int = 0,  # first phase width
+                 h1: int = 0,  # first phase height
                  **kwargs):
         super().__init__(**kwargs)
         self.enable_hr = enable_hr
-        self.denoising_strength = denoising_strength
-        self.firstphase_width = firstphase_width
-        self.firstphase_height = firstphase_height
+        self.chg = chg
+        self.w1 = w1 # First phase width
+        self.h1 = h1 # First phase height
         self.truncate_x = 0
         self.truncate_y = 0
 
     def init(self, model, all_prompts, all_seeds, all_subseeds):
-        import sd_samplers
+        from src_plugins.sd1111_plugin import sd_samplers
 
         self.sdmodel = model
         self.sampler = sd_samplers.create_sampler(self.sampler_id, model)
@@ -116,29 +111,29 @@ class SDJob_txt(SDJob):
             # else:
             #     state.job_count = state.job_count * 2
 
-            self.extra_generation_params["First pass size"] = f"{self.firstphase_width}x{self.firstphase_height}"
+            self.extra_generation_params["First pass size"] = f"{self.w1}x{self.h1}"
 
-            if self.firstphase_width == 0 or self.firstphase_height == 0:
+            if self.w1 == 0 or self.h1 == 0:
                 desired_pixel_count = 512 * 512
                 actual_pixel_count = self.width * self.height
                 scale = math.sqrt(desired_pixel_count / actual_pixel_count)
-                self.firstphase_width = math.ceil(scale * self.width / 64) * 64
-                self.firstphase_height = math.ceil(scale * self.height / 64) * 64
+                self.w1 = math.ceil(scale * self.width / 64) * 64
+                self.h1 = math.ceil(scale * self.height / 64) * 64
                 firstphase_width_truncated = int(scale * self.width)
                 firstphase_height_truncated = int(scale * self.height)
             else:
-                width_ratio = self.width / self.firstphase_width
-                height_ratio = self.height / self.firstphase_height
+                width_ratio = self.width / self.w1
+                height_ratio = self.height / self.h1
 
                 if width_ratio > height_ratio:
-                    firstphase_width_truncated = self.firstphase_width
-                    firstphase_height_truncated = self.firstphase_width * self.height / self.width
+                    firstphase_width_truncated = self.w1
+                    firstphase_height_truncated = self.w1 * self.height / self.width
                 else:
-                    firstphase_width_truncated = self.firstphase_height * self.width / self.height
-                    firstphase_height_truncated = self.firstphase_height
+                    firstphase_width_truncated = self.h1 * self.width / self.height
+                    firstphase_height_truncated = self.h1
 
-            self.truncate_x = int(self.firstphase_width - firstphase_width_truncated) // opt_f
-            self.truncate_y = int(self.firstphase_height - firstphase_height_truncated) // opt_f
+            self.truncate_x = int(self.w1 - firstphase_width_truncated) // opt_f
+            self.truncate_y = int(self.h1 - firstphase_height_truncated) // opt_f
 
     def create_dummy_mask(self, x, width=None, height=None):
         if self.sampler.conditioning_key in {'hybrid', 'concat'}:
@@ -167,12 +162,12 @@ class SDJob_txt(SDJob):
             samples = self.sampler.sample(self, x, conditioning, unconditional_conditioning, image_conditioning=self.create_dummy_mask(x))
             return samples
 
-        x = create_random_tensors([opt_C, self.firstphase_height // opt_f, self.firstphase_width // opt_f], seeds=seeds, subseeds=subseeds, subseed_strength=self.subseed_strength, seed_resize_from_h=self.seed_resize_from_h, seed_resize_from_w=self.seed_resize_from_w, p=self)
-        samples = self.sampler.sample(self, x, conditioning, unconditional_conditioning, image_conditioning=self.create_dummy_mask(x, self.firstphase_width, self.firstphase_height))
+        x = create_random_tensors([opt_C, self.h1 // opt_f, self.w1 // opt_f], seeds=seeds, subseeds=subseeds, subseed_strength=self.subseed_strength, seed_resize_from_h=self.seed_resize_from_h, seed_resize_from_w=self.seed_resize_from_w, p=self)
+        samples = self.sampler.sample(self, x, conditioning, unconditional_conditioning, image_conditioning=self.create_dummy_mask(x, self.w1, self.h1))
 
         samples = samples[:, :, self.truncate_y // 2:samples.shape[2] - self.truncate_y // 2, self.truncate_x // 2:samples.shape[3] - self.truncate_x // 2]
 
-        if SDPlugin.use_scale_latent_for_hires_fix:
+        if SDOptions.use_scale_latent_for_hires_fix:
             samples = torch.nn.functional.interpolate(samples, size=(self.height // opt_f, self.width // opt_f), mode="bilinear")
 
         else:
@@ -209,7 +204,7 @@ class SDJob_txt(SDJob):
         return samples
 
 
-class SDJob_img(SDJob):
+class sd_img(sd_job):
     def __init__(self,
                  init_images: list = None,
                  resize_mode: int = 0,
@@ -240,7 +235,8 @@ class SDJob_img(SDJob):
         self.image_conditioning = None
 
     def init(self, model, all_prompts, all_seeds, all_subseeds):
-        import sd_samplers
+        from src_plugins.sd1111_plugin import sd_samplers
+
         self.sd_model = model
         self.sampler = sd_samplers.create_sampler(self.sampler_id, model)
 
@@ -376,8 +372,10 @@ class SDJob_img(SDJob):
         return samples
 
 
-def process_images(p: SDJob):
-    import sd_samplers
+def process_images(p: sd_job):
+    p.prompt = plugins.run(prompt_job(p.prompt))
+    p.promptneg = plugins.run(prompt_job(p.promptneg))
+
     if type(p.prompt) == list:
         assert (len(p.prompt) > 0)
     else:
@@ -388,8 +386,8 @@ def process_images(p: SDJob):
     seed = get_fixed_seed(p.seed)
     subseed = get_fixed_seed(p.subseed)
 
-    src_plugins.sd1111_plugin.sd_hijack.model_hijack.apply_circular(p.tiling)
-    src_plugins.sd1111_plugin.sd_hijack.model_hijack.clear_comments()
+    sd_hijack.model_hijack.apply_circular(p.tiling)
+    sd_hijack.model_hijack.clear_comments()
 
     # SDPlugin.prompt_styles.apply_styles(p)
 
@@ -413,9 +411,9 @@ def process_images(p: SDJob):
 
     output_images = []
 
-    with torch.no_grad(), SDPlugin.sdmodel.ema_scope():
+    with torch.no_grad(), SDState.sdmodel.ema_scope():
         with devices.autocast():
-            p.init(SDPlugin.sdmodel, p.all_prompts, p.all_seeds, p.all_subseeds)
+            p.init(SDState.sdmodel, p.all_prompts, p.all_seeds, p.all_subseeds)
 
         # if state.skipped:
         #     state.skipped = False
@@ -430,19 +428,19 @@ def process_images(p: SDJob):
             return
 
         with devices.autocast():
-            uc = prompt_parser.get_learned_conditioning(SDPlugin.sdmodel, len(prompts) * [p.promptneg], p.steps)
-            c = prompt_parser.get_multicond_learned_conditioning(SDPlugin.sdmodel, prompts, p.steps)
+            uc = prompt_parser.get_learned_conditioning(SDState.sdmodel, len(prompts) * [p.promptneg], p.steps)
+            c = prompt_parser.get_multicond_learned_conditioning(SDState.sdmodel, prompts, p.steps)
 
         with devices.autocast():
             samples_ddim = p.sample(conditioning=c, unconditional_conditioning=uc, seeds=seeds, subseeds=subseeds, subseed_strength=p.subseed_strength)
 
-        samples_ddim = samples_ddim.to(SDPlugin.dtype_vae)
-        x_samples_ddim = decode_first_stage(SDPlugin.sdmodel, samples_ddim)
+        samples_ddim = samples_ddim.to(devices.dtype_vae)
+        x_samples_ddim = decode_first_stage(SDState.sdmodel, samples_ddim)
         x_samples_ddim = torch.clamp((x_samples_ddim + 1.0) / 2.0, min=0.0, max=1.0)
 
         del samples_ddim
 
-        if SDPlugin.lowvram or SDPlugin.medvram:
+        if SDOptions.lowvram or SDOptions.medvram:
             modelsplit.send_everything_to_cpu()
 
         devices.torch_gc()
@@ -467,6 +465,8 @@ def process_images(p: SDJob):
         devices.torch_gc()
 
     devices.torch_gc()
+
+    return output_images
 
 
 def store_latent(decoded):
@@ -556,7 +556,7 @@ def create_random_tensors(shape, seeds, subseeds=None, subseed_strength=0.0, see
 
 
 def decode_first_stage(model, x):
-    with devices.autocast(disable=x.dtype == SDPlugin.dtype_vae):
+    with devices.autocast(disable=x.dtype == devices.dtype_vae):
         x = model.decode_first_stage(x)
 
     return x
@@ -567,6 +567,7 @@ def get_fixed_seed(seed):
         return int(random.randrange(4294967294))
 
     return seed
+
 
 def fix_seed(p):
     p.seed = get_fixed_seed(p.seed)

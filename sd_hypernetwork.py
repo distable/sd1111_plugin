@@ -1,26 +1,22 @@
-import csv
 import datetime
-import glob
-import html
 import os
 import sys
 import traceback
 from pathlib import Path
+from statistics import mean, stdev
 
-import src_plugins.sd1111_plugin.options
-import src_plugins.sd1111_plugin.sd_paths
-import src_plugins.sd1111_plugin.sd_textinv_dataset
 import torch
 import tqdm
 from einops import rearrange, repeat
-from ldm.util import default
-from src_plugins.sd1111_plugin import devices, sd_models, SDPlugin
-from src_plugins.sd1111_plugin.sd_textinv_learn_schedule import LearnRateScheduler
 from torch import einsum
 
-from statistics import stdev, mean
-
-import src_core.paths
+import src_core.classes.paths
+import src_plugins.sd1111_plugin.sd_paths
+import src_plugins.sd1111_plugin.sd_textinv_dataset
+import src_plugins.sd1111_plugin.SDState
+from src_plugins.sd1111_plugin import sd_models, SDOptions, SDState
+from src_core.lib import devices
+from src_plugins.sd1111_plugin.sd_textinv_learn_schedule import LearnRateScheduler
 
 hypernetworks: dict[str, Path] | None = None
 hnmodel = None
@@ -71,8 +67,8 @@ class HypernetworkModule(torch.nn.Module):
         else:
             for layer in self.linear:
                 if type(layer) == torch.nn.Linear or type(layer) == torch.nn.LayerNorm:
-                    layer.weight.data.normal_(mean=0.0, std=0.01)
-                    layer.bias.data.zero_()
+                    layer.weight.context.normal_(mean=0.0, std=0.01)
+                    layer.bias.context.zero_()
 
         self.to(devices.device)
 
@@ -85,7 +81,7 @@ class HypernetworkModule(torch.nn.Module):
         }
 
         for fr, to in changes.items():
-            x = state_dict.get(fr, None)
+            x = state_dict.get_plug(fr, None)
             if x is None:
                 continue
 
@@ -104,7 +100,7 @@ class HypernetworkModule(torch.nn.Module):
 
 
 def apply_strength(value=None):
-    HypernetworkModule.multiplier = value if value is not None else src_plugins.sd1111_plugin.options.opts.sd_hypernetwork_strength
+    HypernetworkModule.multiplier = value if value is not None else SDOptions.opts.sd_hypernetwork_strength
 
 
 class Hypernetwork:
@@ -163,10 +159,10 @@ class Hypernetwork:
 
         state_dict = torch.load(filename, map_location='cpu')
 
-        self.layer_structure = state_dict.get('layer_structure', [1, 2, 1])
-        self.activation_func = state_dict.get('activation_func', None)
-        self.add_layer_norm = state_dict.get('is_layer_norm', False)
-        self.use_dropout = state_dict.get('use_dropout', False)
+        self.layer_structure = state_dict.get_plug('layer_structure', [1, 2, 1])
+        self.activation_func = state_dict.get_plug('activation_func', None)
+        self.add_layer_norm = state_dict.get_plug('is_layer_norm', False)
+        self.use_dropout = state_dict.get_plug('use_dropout', False)
 
         for size, sd in state_dict.items():
             if type(size) == int:
@@ -175,10 +171,10 @@ class Hypernetwork:
                     HypernetworkModule(size, sd[1], self.layer_structure, self.activation_func, self.add_layer_norm, self.use_dropout),
                 )
 
-        self.name = state_dict.get('name', self.name)
-        self.step = state_dict.get('step', 0)
-        self.sd_checkpoint = state_dict.get('sd_checkpoint', None)
-        self.sd_checkpoint_name = state_dict.get('sd_checkpoint_name', None)
+        self.name = state_dict.get_plug('name', self.name)
+        self.step = state_dict.get_plug('step', 0)
+        self.sd_checkpoint = state_dict.get_plug('sd_checkpoint', None)
+        self.sd_checkpoint_name = state_dict.get_plug('sd_checkpoint_name', None)
 
 
 def discover_hypernetworks(dirpath) -> dict[str, Path]:
@@ -195,17 +191,17 @@ def load_hypernetwork(filename):
     if path is not None:
         print(f"Loading hypernetwork {filename}")
         try:
-            SDPlugin.hnmodel = Hypernetwork()
-            SDPlugin.hnmodel.load(path)
+            SDState.hnmodel = Hypernetwork()
+            SDState.hnmodel.load(path)
 
         except Exception:
             print(f"Error loading hypernetwork {path}", file=sys.stderr)
             print(traceback.format_exc(), file=sys.stderr)
     else:
-        if SDPlugin.hnmodel is not None:
+        if SDState.hnmodel is not None:
             print(f"Unloading hypernetwork")
 
-        SDPlugin.hnmodel = None
+        SDState.hnmodel = None
 
 
 def find_hypernetwork(search: str, exact=False):
@@ -238,12 +234,13 @@ def apply_hypernetwork(hypernetwork, context, layer=None):
 
 
 def attention_CrossAttention_forward(self, x, context=None, mask=None):
+    from ldm.util import default
     h = self.heads
 
     q = self.to_q(x)
     context = default(context, x)
 
-    context_k, context_v = apply_hypernetwork(SDPlugin.hnmodel, context, self)
+    context_k, context_v = apply_hypernetwork(SDState.hnmodel, context, self)
     k = self.to_k(context_k)
     v = self.to_v(context_v)
 
@@ -314,17 +311,17 @@ def train_hypernetwork(hypernetwork_name, learn_rate, batch_size, data_root, log
 
     assert hypernetwork_name, 'hypernetwork not selected'
 
-    path = all_hypernetworks.get(hypernetwork_name, None)
-    SDPlugin.hnmodel = Hypernetwork()
-    SDPlugin.hnmodel.load(path)
+    path = hypernetworks.get(hypernetwork_name, None)
+    SDState.hnmodel = Hypernetwork()
+    SDState.hnmodel.load(path)
 
-    SDPlugin.state.textinfo = "Initializing hypernetwork training..."
-    SDPlugin.state.job_count = steps
+    # SDPlugin.state.textinfo = "Initializing hypernetwork training..."
+    # SDPlugin.state.job_count = steps
 
-    filename = os.path.join(src_core.paths.plug_hypernetworks, f'{hypernetwork_name}.pt')
+    filename = os.path.join(src_core.classes.paths.plug_hypernetworks, f'{hypernetwork_name}.pt')
 
     log_directory = os.path.join(log_directory, datetime.datetime.now().strftime("%Y-%m-%d"), hypernetwork_name)
-    unload = src_plugins.sd1111_plugin.options.opts.unload_models_when_training
+    unload = SDOptions.opts.unload_models_when_training
 
     if save_hypernetwork_every > 0:
         hypernetwork_dir = os.path.join(log_directory, "hypernetworks")
@@ -338,14 +335,14 @@ def train_hypernetwork(hypernetwork_name, learn_rate, batch_size, data_root, log
     else:
         images_dir = None
 
-    SDPlugin.state.textinfo = f"Preparing dataset from {html.escape(data_root)}..."
+    # SDPlugin.state.textinfo = f"Preparing dataset from {html.escape(data_root)}..."
     with torch.autocast("cuda"):
-        ds = src_plugins.textual_inversion.dataset.PersonalizedBase(data_root=data_root, width=training_width, height=training_height, repeats=src_plugins.sd1111_plugin.options.opts.training_image_repeats_per_epoch, placeholder_token=hypernetwork_name, model=SDPlugin.sdmodel, device=devices.device, template_file=template_file, include_cond=True, batch_size=batch_size)
+        ds = src_plugins.textual_inversion.dataset.PersonalizedBase(data_root=data_root, width=training_width, height=training_height, repeats=SDOptions.opts.training_image_repeats_per_epoch, placeholder_token=hypernetwork_name, model=SDState.sdmodel, device=devices.device, template_file=template_file, include_cond=True, batch_size=batch_size)
     if unload:
-        SDPlugin.sdmodel.cond_stage_model.to(devices.cpu)
-        SDPlugin.sdmodel.first_stage_model.to(devices.cpu)
+        SDState.sdmodel.cond_stage_model.to(devices.cpu)
+        SDState.sdmodel.first_stage_model.to(devices.cpu)
 
-    hypernetwork = SDPlugin.hnmodel
+    hypernetwork = SDState.hnmodel
     weights = hypernetwork.weights()
     for weight in weights:
         weight.requires_grad = True
@@ -380,14 +377,14 @@ def train_hypernetwork(hypernetwork_name, learn_rate, batch_size, data_root, log
         if scheduler.finished:
             break
 
-        if SDPlugin.state.interrupted:
+        # if SDPlugin.state.interrupted:
             break
 
         with torch.autocast("cuda"):
             c = stack_conds([entry.cond for entry in entries]).to(devices.device)
             # c = torch.vstack([entry.cond for entry in entries]).to(devices.device)
             x = torch.stack([entry.latent for entry in entries]).to(devices.device)
-            loss = SDPlugin.sdmodel(x, c)[0]
+            loss = SDState.sdmodel(x, c)[0]
             del x
             del c
 
@@ -417,7 +414,8 @@ def train_hypernetwork(hypernetwork_name, learn_rate, batch_size, data_root, log
             last_saved_file = os.path.join(hypernetwork_dir, f'{hypernetwork.name}.pt')
             hypernetwork.save(last_saved_file)
 
-        textual_inversion.write_loss(log_directory, "hypernetwork_loss.csv", hypernetwork.step, len(ds), {
+        from src_plugins.sd1111_plugin import sd_textinv
+        sd_textinv.write_loss(log_directory, "hypernetwork_loss.csv", hypernetwork.step, len(ds), {
             "loss"      : f"{previous_mean_loss:.7f}",
             "learn_rate": scheduler.learn_rate
         })
@@ -427,11 +425,12 @@ def train_hypernetwork(hypernetwork_name, learn_rate, batch_size, data_root, log
             last_saved_image = os.path.join(images_dir, forced_filename)
 
             optimizer.zero_grad()
-            SDPlugin.sdmodel.cond_stage_model.to(devices.device)
-            SDPlugin.sdmodel.first_stage_model.to(devices.device)
+            SDState.sdmodel.cond_stage_model.to(devices.device)
+            SDState.sdmodel.first_stage_model.to(devices.device)
 
-            p = src_plugins.sd1111_plugin.processing.SDJob_txt(
-                    sd_model=SDPlugin.sdmodel,
+            from src_plugins.sd1111_plugin.sd_job import process_images, sd_txt
+            p = sd_txt(
+                    sd_model=SDState.sdmodel,
                     do_not_save_grid=True,
                     do_not_save_samples=True,
             )
@@ -451,29 +450,29 @@ def train_hypernetwork(hypernetwork_name, learn_rate, batch_size, data_root, log
 
             preview_text = p.prompt
 
-            processed = src_plugins.sd1111_plugin.processing.process_images(p)
+            processed = process_images(p)
             image = processed.images[0] if len(processed.images) > 0 else None
 
             if unload:
-                SDPlugin.sdmodel.cond_stage_model.to(devices.cpu)
-                SDPlugin.sdmodel.first_stage_model.to(devices.cpu)
+                SDState.sdmodel.cond_stage_model.to(devices.cpu)
+                SDState.sdmodel.first_stage_model.to(devices.cpu)
 
             if image is not None:
-                SDPlugin.state.current_image = image
-                last_saved_image, last_text_info = images.save_image(image, images_dir, "", p.seed, p.prompt, src_plugins.sd1111_plugin.options.opts.samples_format, processed.infotexts[0], p=p, forced_filename=forced_filename)
+                # SDPlugin.state.current_image = image
+                last_saved_image, last_text_info = images.save_image(image, images_dir, "", p.seed, p.prompt, SDOptions.opts.samples_format, processed.infotexts[0], p=p, forced_filename=forced_filename)
                 last_saved_image += f", prompt: {preview_text}"
 
-        SDPlugin.state.job_no = hypernetwork.step
+        # SDPlugin.state.job_no = hypernetwork.step
 
-        SDPlugin.state.textinfo = f"""
-<p>
-Loss: {previous_mean_loss:.7f}<br/>
-Step: {hypernetwork.step}<br/>
-Last prompt: {html.escape(entries[0].cond_text)}<br/>
-Last saved hypernetwork: {html.escape(last_saved_file)}<br/>
-Last saved image: {html.escape(last_saved_image)}<br/>
-</p>
-"""
+#         SDPlugin.state.textinfo = f"""
+# <p>
+# Loss: {previous_mean_loss:.7f}<br/>
+# Step: {hypernetwork.step}<br/>
+# Last prompt: {html.escape(entries[0].cond_text)}<br/>
+# Last saved hypernetwork: {html.escape(last_saved_file)}<br/>
+# Last saved image: {html.escape(last_saved_image)}<br/>
+# </p>
+# """
 
     report_statistics(loss_dict)
     checkpoint = sd_models.select_checkpoint()
@@ -482,7 +481,7 @@ Last saved image: {html.escape(last_saved_image)}<br/>
     hypernetwork.sd_checkpoint_name = checkpoint.model_name
     # Before saving for the last time, change name back to the base name (as opposed to the save_hypernetwork_every step-suffixed naming convention).
     hypernetwork.name = hypernetwork_name
-    filename = os.path.join(src_core.paths.plug_hypernetworks, f'{hypernetwork.name}.pt')
+    filename = os.path.join(paths.plug_hypernetworks, f'{hypernetwork.name}.pt')
     hypernetwork.save(filename)
 
     return hypernetwork, filename

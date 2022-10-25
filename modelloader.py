@@ -3,38 +3,6 @@ import os
 import shutil
 import importlib
 from urllib.parse import urlparse
-
-# from basicsr.utils.download_util import load_file_from_url
-import SDPlugin
-from src_core.modellib import load_file_from_url
-
-
-
-
-
-
-# def cleanup_models():
-#     # This code could probably be more efficient if we used a tuple list or something to store the src/destinations
-#     # and then enumerate that, but this works for now. In the future, it'd be nice to just have every "model" scaler
-#     # somehow auto-register and just do these things...
-#     root_path = script_path
-#     src_path = models_path
-#     dest_path = os.path.join(models_path, "Stable-diffusion")
-#     move_files(src_path, dest_path, ".ckpt")
-#     src_path = os.path.join(root_path, "ESRGAN")
-#     dest_path = os.path.join(models_path, "ESRGAN")
-#     move_files(src_path, dest_path)
-#     src_path = os.path.join(root_path, "gfpgan")
-#     dest_path = os.path.join(models_path, "GFPGAN")
-#     move_files(src_path, dest_path)
-#     src_path = os.path.join(root_path, "SwinIR")
-#     dest_path = os.path.join(models_path, "SwinIR")
-#     move_files(src_path, dest_path)
-#     src_path = os.path.join(root_path, "plugin-repos/latent-diffusion/experiments/pretrained_models/")
-#     dest_path = os.path.join(models_path, "LDSR")
-#     move_files(src_path, dest_path)
-
-
 def move_files(src_path: str, dest_path: str, ext_filter: str = None):
     try:
         if not os.path.exists(dest_path):

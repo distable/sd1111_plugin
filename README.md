@@ -7,3 +7,6 @@ It is heavily refactored, trimming as much of the superfluous features as possib
 
 * txt2img
 * img2img
+* train_hypernetwork
+* train_textinv
+* preprocess_textinv

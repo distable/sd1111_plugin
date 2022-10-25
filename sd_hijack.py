@@ -1,15 +1,15 @@
 import math
-import torch
-
-import prompt_parser, devices, sd_hijack_optimizations, SDPlugin
-from src_plugins.sd1111_plugin.SDAttention import SDAttention
-from src_plugins.sd1111_plugin.options import opts
-
-import src_core.paths
-from sd_hijack_optimizations import invokeAI_mps_available
 
 import ldm.modules.attention
 import ldm.modules.diffusionmodules.model
+import torch
+
+import src_plugins.sd1111_plugin.SDOptions
+from src_plugins.sd1111_plugin.sd_hijack_optimizations import invokeAI_mps_available
+from src_plugins.sd1111_plugin import prompt_parser, sd_hijack_optimizations, sd_paths
+from src_core.lib import devices
+from src_plugins.sd1111_plugin.options import opts
+from src_plugins.sd1111_plugin.SDAttention import SDAttention
 
 attention_CrossAttention_forward = ldm.modules.attention.CrossAttention.forward
 diffusionmodules_model_nonlinearity = ldm.modules.diffusionmodules.model.nonlinearity
@@ -43,7 +43,7 @@ diffusionmodules_model_AttnBlock_forward = ldm.modules.diffusionmodules.model.At
 
 def apply_optimizations():
     ldm.modules.diffusionmodules.model.nonlinearity = torch.nn.functional.silu
-    mode = SDPlugin.attention
+    mode = src_plugins.sd1111_plugin.SDOptions.attention
 
     # Validate
     # ----------------------------------------
@@ -77,7 +77,8 @@ def apply_optimizations():
 
 
 def undo_optimizations():
-    ldm.modules.attention.CrossAttention.forward = hypernetwork.attention_CrossAttention_forward
+    from src_plugins.sd1111_plugin import sd_hypernetwork
+    ldm.modules.attention.CrossAttention.forward = sd_hypernetwork.attention_CrossAttention_forward
     ldm.modules.diffusionmodules.model.nonlinearity = diffusionmodules_model_nonlinearity
     ldm.modules.diffusionmodules.model.AttnBlock.forward = diffusionmodules_model_AttnBlock_forward
 
@@ -94,8 +95,8 @@ class StableDiffusionModelHijack:
     clip = None
 
     def __init__(self):
-        import sd_textinv
-        self.embedding_db = sd_textinv.EmbeddingDatabase(SDPlugin.res("embeddings"))
+        from src_plugins.sd1111_plugin import sd_textinv
+        self.embedding_db = sd_textinv.EmbeddingDatabase(sd_paths.res("embeddings"))
 
     def hijack(self, m):
         model_embeddings = m.cond_stage_model.transformer.text_model.embeddings

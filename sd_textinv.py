@@ -4,7 +4,6 @@ import traceback
 
 import torch
 import tqdm
-import html
 import datetime
 import csv
 
@@ -12,14 +11,17 @@ from PIL import Image, PngImagePlugin
 
 import src_plugins.sd1111_plugin.options
 import src_plugins.sd1111_plugin.sd_paths
-from src_plugins.sd1111_plugin import SDPlugin, devices, sd_hijack, sd_models
+import src_plugins.sd1111_plugin.SDState
+from src_plugins.sd1111_plugin import sd_hijack, sd_models
+from src_core.lib import devices
 import src_plugins.sd1111_plugin.sd_textinv_dataset
+from src_plugins.sd1111_plugin.sd_job import process_images, sd_txt
 from src_plugins.sd1111_plugin.sd_textinv_learn_schedule import LearnRateScheduler
 from src_plugins.sd1111_plugin.image_embedding import (embedding_to_b64, embedding_from_b64,
                                                        insert_image_data_embed, extract_image_data_embed,
                                                        caption_image_overlay)
 
-import src_core.paths
+import src_core.classes.paths
 
 
 class Embedding:
@@ -96,10 +98,10 @@ class EmbeddingDatabase:
                 embed_image = Image.open(path)
                 if hasattr(embed_image, 'text') and 'sd-ti-embedding' in embed_image.text:
                     data = embedding_from_b64(embed_image.text['sd-ti-embedding'])
-                    name = data.get('name', name)
+                    name = data.get_plug('name', name)
                 else:
                     data = extract_image_data_embed(embed_image)
-                    name = data.get('name', name)
+                    name = data.get_plug('name', name)
             else:
                 data = torch.load(path, map_location="cpu")
 
@@ -122,10 +124,10 @@ class EmbeddingDatabase:
 
             vec = emb.detach().to(devices.device, dtype=torch.float32)
             embedding = Embedding(vec, name)
-            embedding.step = data.get('step', None)
-            embedding.sd_checkpoint = data.get('hash', None)
-            embedding.sd_checkpoint_name = data.get('sd_checkpoint_name', None)
-            self.register_embedding(embedding, SDPlugin.sdmodel)
+            embedding.step = data.get_plug('step', None)
+            embedding.sd_checkpoint = data.get_plug('hash', None)
+            embedding.sd_checkpoint_name = data.get_plug('sd_checkpoint_name', None)
+            self.register_embedding(embedding, src_plugins.sd1111_plugin.SDState.sdmodel)
 
         for fn in os.listdir(self.embeddings_dir):
             try:
@@ -158,7 +160,7 @@ class EmbeddingDatabase:
 
 
 def create_embedding(name, num_vectors_per_token, overwrite_old, init_text='*'):
-    cond_model = SDPlugin.sdmodel.cond_stage_model
+    cond_model = src_plugins.sd1111_plugin.SDState.sdmodel.cond_stage_model
     embedding_layer = cond_model.wrapped.transformer.text_model.embeddings
 
     ids = cond_model.tokenizer(init_text, max_length=num_vectors_per_token, return_tensors="pt", add_special_tokens=False)["input_ids"]
@@ -168,7 +170,7 @@ def create_embedding(name, num_vectors_per_token, overwrite_old, init_text='*'):
     for i in range(num_vectors_per_token):
         vec[i] = embedded[i * int(embedded.shape[0]) // num_vectors_per_token]
 
-    fn = os.path.join(src_core.paths.plug_embeddings, f"{name}.pt")
+    fn = os.path.join(src_core.classes.paths.plug_embeddings, f"{name}.pt")
     if not overwrite_old:
         assert not os.path.exists(fn), f"file {fn} already exists"
 
@@ -208,10 +210,10 @@ def write_loss(log_directory, filename, step, epoch_len, values):
 def train_embedding(embedding_name, learn_rate, batch_size, data_root, log_directory, training_width, training_height, steps, create_image_every, save_embedding_every, template_file, save_image_with_stored_embedding, preview_from_txt2img, preview_prompt, preview_negative_prompt, preview_steps, preview_sampler_index, preview_cfg_scale, preview_seed, preview_width, preview_height):
     assert embedding_name, 'embedding not selected'
 
-    SDPlugin.state.textinfo = "Initializing textual inversion training..."
-    SDPlugin.state.job_count = steps
+    # SDPlugin.state.textinfo = "Initializing textual inversion training..."
+    # SDPlugin.state.job_count = steps
 
-    filename = os.path.join(src_core.paths.plug_embeddings, f'{embedding_name}.pt')
+    filename = os.path.join(src_core.classes.paths.plug_embeddings, f'{embedding_name}.pt')
 
     log_directory = os.path.join(log_directory, datetime.datetime.now().strftime("%Y-%m-%d"), embedding_name)
 
@@ -233,11 +235,11 @@ def train_embedding(embedding_name, learn_rate, batch_size, data_root, log_direc
     else:
         images_embeds_dir = None
 
-    cond_model = SDPlugin.sdmodel.cond_stage_model
+    cond_model = src_plugins.sd1111_plugin.SDState.sdmodel.cond_stage_model
 
-    SDPlugin.state.textinfo = f"Preparing dataset from {html.escape(data_root)}..."
+    # SDPlugin.state.textinfo = f"Preparing dataset from {html.escape(data_root)}..."
     with torch.autocast("cuda"):
-        ds = src_plugins.textual_inversion.dataset.PersonalizedBase(data_root=data_root, width=training_width, height=training_height, repeats=src_plugins.sd1111_plugin.options.opts.training_image_repeats_per_epoch, placeholder_token=embedding_name, model=SDPlugin.sdmodel, device=devices.device, template_file=template_file, batch_size=batch_size)
+        ds = src_plugins.textual_inversion.dataset.PersonalizedBase(data_root=data_root, width=training_width, height=training_height, repeats=src_plugins.sd1111_plugin.options.opts.training_image_repeats_per_epoch, placeholder_token=embedding_name, model=src_plugins.sd1111_plugin.SDState.sdmodel, device=devices.device, template_file=template_file, batch_size=batch_size)
 
     hijack = sd_hijack.model_hijack
 
@@ -265,13 +267,13 @@ def train_embedding(embedding_name, learn_rate, batch_size, data_root, log_direc
         if scheduler.finished:
             break
 
-        if SDPlugin.state.interrupted:
+        # if SDPlugin.state.interrupted:
             break
 
         with torch.autocast("cuda"):
             c = cond_model([entry.cond_text for entry in entries])
             x = torch.stack([entry.latent for entry in entries]).to(devices.device)
-            loss = SDPlugin.sdmodel(x, c)[0]
+            loss = src_plugins.sd1111_plugin.SDState.sdmodel(x, c)[0]
             del x
 
             losses[embedding.progress_i % losses.shape[0]] = loss.item()
@@ -299,9 +301,9 @@ def train_embedding(embedding_name, learn_rate, batch_size, data_root, log_direc
         if embedding.progress_i > 0 and images_dir is not None and embedding.progress_i % create_image_every == 0:
             last_saved_image = os.path.join(images_dir, f'{embedding_name}-{embedding.progress_i}.png')
 
-            from src_plugins.sd1111_plugin import SDJob
-            p = processing.SDJob_txt(
-                sd_model=SDPlugin.sdmodel,
+            from src_plugins.sd1111_plugin import sd_job
+            p = sd_txt(
+                sd_model=src_plugins.sd1111_plugin.SDState.sdmodel,
                 do_not_save_grid=True,
                 do_not_save_samples=True,
                 do_not_reload_embeddings=True,
@@ -324,10 +326,10 @@ def train_embedding(embedding_name, learn_rate, batch_size, data_root, log_direc
 
             preview_text = p.prompt
 
-            processed = processing.process_images(p)
+            processed = process_images(p)
             image = processed.images[0]
 
-            SDPlugin.state.current_image = image
+            # SDPlugin.state.current_image = image
 
             if save_image_with_stored_embedding and os.path.exists(last_saved_file) and embedding_yet_to_be_embedded:
 
@@ -337,7 +339,7 @@ def train_embedding(embedding_name, learn_rate, batch_size, data_root, log_direc
                 data = torch.load(last_saved_file)
                 info.add_text("sd-ti-embedding", embedding_to_b64(data))
 
-                title = "<{}>".format(data.get('name', '???'))
+                title = "<{}>".format(data.get_plug('name', '???'))
 
                 try:
                     vectorSize = list(data['string_to_param'].values())[0].shape[0]
@@ -359,17 +361,17 @@ def train_embedding(embedding_name, learn_rate, batch_size, data_root, log_direc
 
             last_saved_image += f", prompt: {preview_text}"
 
-        SDPlugin.state.job_no = embedding.progress_i
+        # SDPlugin.state.job_no = embedding.progress_i
 
-        SDPlugin.state.textinfo = f"""
-<p>
-Loss: {losses.mean():.7f}<br/>
-Step: {embedding.progress_i}<br/>
-Last prompt: {html.escape(entries[0].cond_text)}<br/>
-Last saved embedding: {html.escape(last_saved_file)}<br/>
-Last saved image: {html.escape(last_saved_image)}<br/>
-</p>
-"""
+#         SDPlugin.state.textinfo = f"""
+# <p>
+# Loss: {losses.mean():.7f}<br/>
+# Step: {embedding.progress_i}<br/>
+# Last prompt: {html.escape(entries[0].cond_text)}<br/>
+# Last saved embedding: {html.escape(last_saved_file)}<br/>
+# Last saved image: {html.escape(last_saved_image)}<br/>
+# </p>
+# """
 
     checkpoint = sd_models.select_checkpoint()
 

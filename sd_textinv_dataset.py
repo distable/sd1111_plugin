@@ -10,7 +10,8 @@ import random
 import tqdm
 
 import src_plugins.sd1111_plugin.options
-from src_plugins.sd1111_plugin import devices
+import src_plugins.sd1111_plugin.SDState
+from src_core.lib import devices
 import re
 
 re_numbers_at_start = re.compile(r"^[-\d]+\s*")
@@ -46,7 +47,7 @@ class PersonalizedBase(Dataset):
         assert data_root, 'dataset directory not specified'
 
         from src_plugins.sd1111_plugin import SDPlugin
-        cond_model = SDPlugin.sdmodel.cond_stage_model
+        cond_model = src_plugins.sd1111_plugin.SDState.sdmodel.cond_stage_model
 
         self.image_paths = [os.path.join(data_root, file_path) for file_path in os.listdir(data_root)]
         print("Preparing dataset...")

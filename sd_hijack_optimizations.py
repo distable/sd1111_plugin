@@ -1,24 +1,25 @@
-import math
 import importlib
+import math
 
 import torch
+from einops import rearrange
+from ldm.util import default
 from torch import einsum
 
-from ldm.util import default
-from einops import rearrange
-
-import SDPlugin
+import src_plugins.sd1111_plugin.SDState
 from src_plugins.sd1111_plugin import sd_hypernetwork
 
 
 # see https://github.com/basujindal/stable-diffusion/pull/117 for discussion
+
+
 def split_cross_attention_forward_v1(self, x, context=None, mask=None):
     h = self.heads
 
     q_in = self.to_q(x)
     context = default(context, x)
 
-    context_k, context_v = hypernetwork.apply_hypernetwork(SDPlugin.hnmodel, context)
+    context_k, context_v = sd_hypernetwork.apply_hypernetwork(src_plugins.sd1111_plugin.SDState.hnmodel, context)
     k_in = self.to_k(context_k)
     v_in = self.to_v(context_v)
     del context, context_k, context_v, x
@@ -53,7 +54,7 @@ def split_cross_attention_forward():
         q_in = self.to_q(x)
         context = default(context, x)
 
-        context_k, context_v = hypernetwork.apply_hypernetwork(SDPlugin.hnmodel, context)
+        context_k, context_v = sd_hypernetwork.apply_hypernetwork(src_plugins.sd1111_plugin.SDState.hnmodel, context)
         k_in = self.to_k(context_k)
         v_in = self.to_v(context_v)
 
@@ -205,7 +206,7 @@ def split_cross_attention_forward_invokeAI(self, x, context=None, mask=None):
     q = self.to_q(x)
     context = default(context, x)
 
-    context_k, context_v = hypernetwork.apply_hypernetwork(SDPlugin.hnmodel, context)
+    context_k, context_v = sd_hypernetwork.apply_hypernetwork(src_plugins.sd1111_plugin.SDState.hnmodel, context)
     k = self.to_k(context_k) * self.scale
     v = self.to_v(context_v)
     del context, context_k, context_v, x
@@ -222,7 +223,7 @@ def xformers_attention_forward(self, x, context=None, mask=None):
     q_in = self.to_q(x)
     context = default(context, x)
 
-    context_k, context_v = hypernetwork.apply_hypernetwork(SDPlugin.hnmodel, context)
+    context_k, context_v = sd_hypernetwork.apply_hypernetwork(src_plugins.sd1111_plugin.SDState.hnmodel, context)
     k_in = self.to_k(context_k)
     v_in = self.to_v(context_v)
 

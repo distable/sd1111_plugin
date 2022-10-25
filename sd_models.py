@@ -2,24 +2,15 @@ import collections
 import os.path
 import sys
 from collections import namedtuple
-from urllib.parse import urlparse
+from pathlib import Path
 
 import torch
 from omegaconf import OmegaConf
 
-from ldm.util import instantiate_from_config
-
-import options
-import sd_paths
-import SDPlugin
-import src_plugins
-
-from src_core import paths, modellib
-from sd_hijack_inpainting import do_inpainting_hijack, should_hijack_inpainting
-
-# model_dir = "Stable-diffusion"
-# model_path = paths.plug_models / model_dir
-from src_core.printlib import printerr
+from src_plugins.sd1111_plugin.sd_hijack_inpainting import do_inpainting_hijack, should_hijack_inpainting
+from src_core.lib import devices, modellib
+from src_core.classes.printlib import printerr
+from src_plugins.sd1111_plugin import options, sd_paths, SDOptions, SDState
 
 g_infos = {}
 g_loaded = collections.OrderedDict()
@@ -35,33 +26,19 @@ def checkpoint_titles():
 
 def discover_sdmodels():
     g_infos.clear()
-    all_paths = modellib.discover_models(model_dir=SDPlugin.res(),
-                                         command_path=SDPlugin.res(),
+    all_paths = modellib.discover_models(model_dir=sd_paths.res(),
+                                         command_path=sd_paths.res(),
                                          ext_filter=[".ckpt"])
 
     def modeltitle(path, shorthash):
-        abspath = os.path.abspath(path)
+        return f'{Path(path).name} [{shorthash}]', Path(path).with_suffix("").name
 
-        if SDPlugin.res() is not None and abspath.startswith(SDPlugin.res()):
-            name = abspath.replace(SDPlugin.res(), '')
-        elif abspath.startswith(model_path):
-            name = abspath.replace(model_path, '')
-        else:
-            name = os.path.basename(path)
-
-        if name.startswith("\\") or name.startswith("/"):
-            name = name[1:]
-
-        shortname = os.path.splitext(name.replace("/", "_").replace("\\", "_"))[0]
-
-        return f'{name} [{shorthash}]', shortname
-
-    cmd_ckpt = sd_paths.ckpt
+    cmd_ckpt = sd_paths.default_ckpt
     if os.path.exists(cmd_ckpt):
         h = get_model_hash(cmd_ckpt)
         title, short_model_name = modeltitle(cmd_ckpt, h)
         g_infos[title] = CheckpointInfo(cmd_ckpt, title, h, short_model_name, sd_paths.config)
-        options.opts.data['sd_model_checkpoint'] = title
+        # options.opts.context['sd_model_checkpoint'] = title
 
     for filename in all_paths:
         h = get_model_hash(filename)
@@ -104,7 +81,7 @@ def select_checkpoint(path=None):
         printerr(f"No checkpoints found. When searching for checkpoints, looked at:")
         if sd_paths.ckpt is not None:
             printerr(f" - file {os.path.abspath(sd_paths.ckpt)}")
-        printerr(f" - directory {SDPlugin.res()}")
+        printerr(f" - directory {sd_paths.res()}")
 
         printerr(f"Can't run without a checkpoint. Find and place a .ckpt file into any of those locations. The program will exit.")
         exit(1)
@@ -155,21 +132,21 @@ def load_model_weights(model, info):
     if info not in g_loaded:
         print(f"Loading weights [{hash}] from {path}")
 
-        pl_sd = torch.load(path, map_location=SDPlugin.weight_load_location)
+        pl_sd = torch.load(path, map_location=SDOptions.weight_load_location)
         if "global_step" in pl_sd:
             print(f"Global Step: {pl_sd['global_step']}")
 
         sd = get_state_dict_from_checkpoint(pl_sd)
         missing, extra = model.load_state_dict(sd, strict=False)
 
-        if SDPlugin.opt_channelslast:
+        if SDOptions.opt_channelslast:
             model.to(memory_format=torch.channels_last)
 
-        if not SDPlugin.no_half:
+        if not SDOptions.no_half:
             model.half()
 
-        SDPlugin.dtype = torch.float32 if SDPlugin.no_half else torch.float16
-        SDPlugin.dtype_vae = torch.float32 if SDPlugin.no_half or SDPlugin.no_half_vae else torch.float16
+        devices.dtype = torch.float32 if SDOptions.no_half else torch.float16
+        devices.dtype_vae = torch.float32 if SDOptions.no_half or SDOptions.no_half_vae else torch.float16
 
         vae_file = os.path.splitext(path)[0] + ".vae.pt"
 
@@ -178,11 +155,11 @@ def load_model_weights(model, info):
 
         if os.path.exists(vae_file):
             print(f"Loading VAE weights from: {vae_file}")
-            vae_ckpt = torch.load(vae_file, map_location=SDPlugin.weight_load_location)
+            vae_ckpt = torch.load(vae_file, map_location=SDOptions.weight_load_location)
             vae_dict = {k: v for k, v in vae_ckpt["state_dict"].items() if k[0:4] != "loss" and k not in vae_ignore_keys}
             model.first_stage_model.load_state_dict(vae_dict)
 
-        model.first_stage_model.to(SDPlugin.dtype_vae)
+        model.first_stage_model.to(devices.dtype_vae)
 
         g_loaded[info] = model.state_dict().copy()
         while len(g_loaded) > options.opts.sd_checkpoint_cache:
@@ -198,7 +175,7 @@ def load_model_weights(model, info):
 
 
 def load_sdmodel(info=None):
-    import modelsplit, sd_hijack, devices, modelsplit
+    from src_plugins.sd1111_plugin import sd_hijack, modelsplit
     info = info or select_checkpoint()
 
     if info.config != sd_paths.config:
@@ -217,18 +194,19 @@ def load_sdmodel(info=None):
         info = info._replace(config=info.config.replace(".yaml", "-inpainting.yaml"))
 
     do_inpainting_hijack()
+    from ldm.util import instantiate_from_config
     sdmodel = instantiate_from_config(config.model)
     load_model_weights(sdmodel, info)
 
-    if SDPlugin.lowvram or SDPlugin.medvram:
-        modelsplit.setup_for_low_vram(sdmodel, SDPlugin.medvram)
+    if SDOptions.lowvram or SDOptions.medvram:
+        modelsplit.setup_for_low_vram(sdmodel, SDOptions.medvram)
     else:
         sdmodel.to(devices.device)
 
     sd_hijack.model_hijack.hijack(sdmodel)
 
     sdmodel.eval()
-    SDPlugin.sdmodel = sdmodel
+    SDState.sdmodel = sdmodel
 
     # script_callbacks.model_loaded_callback(sdmodel)
 
@@ -237,7 +215,7 @@ def load_sdmodel(info=None):
 
 
 def reload_model_weights(sdmodel, info=None):
-    import modelsplit, devices, sd_hijack
+    import modelsplit, sd_hijack
     info = info or select_checkpoint()
 
     if sdmodel.ckptpath == info.filename:
@@ -246,9 +224,9 @@ def reload_model_weights(sdmodel, info=None):
     if sd_paths.config != info.config or should_hijack_inpainting(info) != should_hijack_inpainting(sdmodel.info):
         g_loaded.clear()
         load_sdmodel(info)
-        return SDPlugin.sdmodel
+        return SDState.sdmodel
 
-    if SDPlugin.lowvram or SDPlugin.medvram:
+    if SDOptions.lowvram or SDOptions.medvram:
         modelsplit.send_everything_to_cpu()
     else:
         sdmodel.to(devices.cpu)
@@ -260,7 +238,7 @@ def reload_model_weights(sdmodel, info=None):
     sd_hijack.model_hijack.hijack(sdmodel)
     # script_callbacks.model_loaded_callback(sd_model)
 
-    if not SDPlugin.lowvram and not SDPlugin.medvram:
+    if not SDOptions.lowvram and not SDOptions.medvram:
         sdmodel.to(devices.device)
 
     print(f"Weights loaded.")

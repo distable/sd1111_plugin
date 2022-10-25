@@ -1,6 +1,6 @@
 import torch
 
-import devices
+from src_core.lib import devices
 
 module_in_gpu = None
 cpu = torch.device("cpu")

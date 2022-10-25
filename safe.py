@@ -86,8 +86,6 @@ def check_pt(filename):
 
 
 def load(filename, *args, **kwargs):
-    import SDPlugin
-
     try:
         if not disable_safe_unpickle:
             check_pt(filename)
