@@ -7,14 +7,20 @@ from pathlib import Path
 import torch
 from omegaconf import OmegaConf
 
+from . import __conf__
 from src_plugins.sd1111_plugin.sd_hijack_inpainting import do_inpainting_hijack, should_hijack_inpainting
 from src_core.lib import devices, modellib
 from src_core.classes.printlib import printerr
-from src_plugins.sd1111_plugin import options, sd_paths, SDOptions, SDState
+from src_plugins.sd1111_plugin import options, sd_paths, SDState
 
 g_infos = {}
 g_loaded = collections.OrderedDict()
 
+ckpt_dict_replacements = {
+    'cond_stage_model.transformer.embeddings.'      : 'cond_stage_model.transformer.text_model.embeddings.',
+    'cond_stage_model.transformer.encoder.'         : 'cond_stage_model.transformer.text_model.encoder.',
+    'cond_stage_model.transformer.final_layer_norm.': 'cond_stage_model.transformer.text_model.final_layer_norm.',
+}
 vae_ignore_keys = {"model_ema.decay", "model_ema.num_updates"}
 
 CheckpointInfo = namedtuple("CheckpointInfo", ['filename', 'title', 'hash', 'model_name', 'config'])
@@ -72,7 +78,10 @@ def get_model_hash(filename):
         return 'NOFILE'
 
 
-def select_checkpoint(path=None):
+def get_checkpoint(path=None):
+    """
+    Set the current active checkpoint
+    """
     info = g_infos.get(path, None)
     if info is not None:
         return info
@@ -93,28 +102,21 @@ def select_checkpoint(path=None):
     return info
 
 
-chckpoint_dict_replacements = {
-    'cond_stage_model.transformer.embeddings.'      : 'cond_stage_model.transformer.text_model.embeddings.',
-    'cond_stage_model.transformer.encoder.'         : 'cond_stage_model.transformer.text_model.encoder.',
-    'cond_stage_model.transformer.final_layer_norm.': 'cond_stage_model.transformer.text_model.final_layer_norm.',
-}
-
-
-def transform_checkpoint_dict_key(k):
-    for text, replacement in chckpoint_dict_replacements.items():
+def transform_ckpt_dict_key(k):
+    for text, replacement in ckpt_dict_replacements.items():
         if k.startswith(text):
             k = replacement + k[len(text):]
 
     return k
 
 
-def get_state_dict_from_checkpoint(pl_sd):
+def get_state_dict_from_ckpt(pl_sd):
     if "state_dict" in pl_sd:
         pl_sd = pl_sd["state_dict"]
 
     sd = {}
     for k, v in pl_sd.items():
-        new_key = transform_checkpoint_dict_key(k)
+        new_key = transform_ckpt_dict_key(k)
 
         if new_key is not None:
             sd[new_key] = v
@@ -130,23 +132,24 @@ def load_model_weights(model, info):
     hash = info.hash
 
     if info not in g_loaded:
-        print(f"Loading weights [{hash}] from {path}")
+        print(f"{path}")
 
-        pl_sd = torch.load(path, map_location=SDOptions.weight_load_location)
-        if "global_step" in pl_sd:
-            print(f"Global Step: {pl_sd['global_step']}")
+        # TODO what does 'pl' stand for ?
+        pl_sd = torch.load(path, map_location=__conf__.weight_load_device)
+        # if "global_step" in pl_sd:
+        #     print(f"Global Step: {pl_sd['global_step']}")
 
-        sd = get_state_dict_from_checkpoint(pl_sd)
+        sd = get_state_dict_from_ckpt(pl_sd)
         missing, extra = model.load_state_dict(sd, strict=False)
 
-        if SDOptions.opt_channelslast:
+        if __conf__.opt_channelslast:
             model.to(memory_format=torch.channels_last)
 
-        if not SDOptions.no_half:
+        if not __conf__.no_half:
             model.half()
 
-        devices.dtype = torch.float32 if SDOptions.no_half else torch.float16
-        devices.dtype_vae = torch.float32 if SDOptions.no_half or SDOptions.no_half_vae else torch.float16
+        devices.dtype = torch.float32 if __conf__.no_half else torch.float16
+        devices.dtype_vae = torch.float32 if __conf__.no_half or __conf__.no_half_vae else torch.float16
 
         vae_file = os.path.splitext(path)[0] + ".vae.pt"
 
@@ -154,8 +157,8 @@ def load_model_weights(model, info):
             vae_file = sd_paths.vae_path
 
         if os.path.exists(vae_file):
-            print(f"Loading VAE weights from: {vae_file}")
-            vae_ckpt = torch.load(vae_file, map_location=SDOptions.weight_load_location)
+            print(f"{vae_file}")
+            vae_ckpt = torch.load(vae_file, map_location=__conf__.weight_load_device)
             vae_dict = {k: v for k, v in vae_ckpt["state_dict"].items() if k[0:4] != "loss" and k not in vae_ignore_keys}
             model.first_stage_model.load_state_dict(vae_dict)
 
@@ -165,7 +168,7 @@ def load_model_weights(model, info):
         while len(g_loaded) > options.opts.sd_checkpoint_cache:
             g_loaded.popitem(last=False)  # LRU
     else:
-        print(f"Loading weights [{hash}] from cache")
+        print(f"[{hash}] from cache")
         g_loaded.move_to_end(info)
         model.load_state_dict(g_loaded[info])
 
@@ -176,7 +179,7 @@ def load_model_weights(model, info):
 
 def load_sdmodel(info=None):
     from src_plugins.sd1111_plugin import sd_hijack, modelsplit
-    info = info or select_checkpoint()
+    info = info or get_checkpoint()
 
     if info.config != sd_paths.config:
         print(f"Loading config from: {info.config}")
@@ -198,8 +201,8 @@ def load_sdmodel(info=None):
     sdmodel = instantiate_from_config(config.model)
     load_model_weights(sdmodel, info)
 
-    if SDOptions.lowvram or SDOptions.medvram:
-        modelsplit.setup_for_low_vram(sdmodel, SDOptions.medvram)
+    if __conf__.lowvram or __conf__.medvram:
+        modelsplit.setup_for_low_vram(sdmodel, __conf__.medvram)
     else:
         sdmodel.to(devices.device)
 
@@ -216,7 +219,7 @@ def load_sdmodel(info=None):
 
 def reload_model_weights(sdmodel, info=None):
     import modelsplit, sd_hijack
-    info = info or select_checkpoint()
+    info = info or get_checkpoint()
 
     if sdmodel.ckptpath == info.filename:
         return
@@ -226,7 +229,7 @@ def reload_model_weights(sdmodel, info=None):
         load_sdmodel(info)
         return SDState.sdmodel
 
-    if SDOptions.lowvram or SDOptions.medvram:
+    if __conf__.lowvram or __conf__.medvram:
         modelsplit.send_everything_to_cpu()
     else:
         sdmodel.to(devices.cpu)
@@ -238,7 +241,7 @@ def reload_model_weights(sdmodel, info=None):
     sd_hijack.model_hijack.hijack(sdmodel)
     # script_callbacks.model_loaded_callback(sd_model)
 
-    if not SDOptions.lowvram and not SDOptions.medvram:
+    if not __conf__.lowvram and not __conf__.medvram:
         sdmodel.to(devices.device)
 
     print(f"Weights loaded.")

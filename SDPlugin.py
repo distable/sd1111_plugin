@@ -8,7 +8,7 @@ from src_core.classes.Plugin import Plugin
 from src_plugins.sd1111_plugin import safe, sd_job, sd_paths
 from src_core.lib import devices
 from src_plugins.sd1111_plugin.SDAttention import SDAttention
-from src_plugins.sd1111_plugin.SDOptions import attention
+from src_plugins.sd1111_plugin.__conf__ import attention
 
 # Arguments
 # ----------------------------------------
@@ -29,6 +29,10 @@ from src_plugins.sd1111_plugin import sd_hypernetwork, sd_models
 from src_plugins.sd1111_plugin import sd_hijack
 from src_plugins.sd1111_plugin.sd_job import sd_img, sd_txt
 
+
+class sd_auto(sd_img, sd_txt):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
 
 class SDPlugin(Plugin):
@@ -67,10 +71,17 @@ class SDPlugin(Plugin):
     def select_hn(self, name: str):
         sd_hypernetwork.load_hypernetwork(name)
 
-    @plugjob
-    def txt2img(self, job: sd_txt = None, **kwargs):
-        return sd_job.process_images(job or sd_txt(**kwargs))
+    @plugjob(key='sd_job')
+    def sd1111(self, args: sd_auto):
+        return sd_job.process_images(args)
 
-    @plugjob
-    def img2img(self, job: sd_img = None, **kwargs):
-        return sd_job.process_images(job or sd_img(**kwargs))
+    @plugjob(key='sd_job')
+    def txt2img(self, args: sd_txt):
+        return sd_job.process_images(args)
+
+    @plugjob(key='sd_job')
+    def img2img(self, args: sd_img):
+        if args.init_images is None:
+            args.init_images = [args.input.image]
+        ret = sd_job.process_images(args)
+        return ret

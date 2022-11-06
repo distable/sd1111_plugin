@@ -1,4 +1,3 @@
-import user_conf
 from src_plugins.sd1111_plugin.SDAttention import SDAttention
 
 attention = SDAttention.SPLIT_DOGGETT
@@ -15,5 +14,5 @@ force_enable_xformers = False
 batch_cond_uncond = always_batch_cond_uncond or not (lowvram or medvram)
 use_cpu = False
 use_scale_latent_for_hires_fix = False
-weight_load_location = None if lowram else "cpu"
+weight_load_device = None if lowram else "cpu"
 parallel_processing_allowed = not lowvram and not medvram

@@ -6,10 +6,11 @@ import numpy as np
 import torch
 from PIL import Image, ImageFilter, ImageOps
 
+import src_plugins.sd1111_plugin.__conf__
 from src_core import plugins
 # some of those options should not be changed at all because they would break the model, so I removed them from options.
-from src_plugins.sd1111_plugin import images, masking, modelsplit, prompt_parser, sd_hijack, SDOptions, SDState
-from src_core.lib import devices
+from src_plugins.sd1111_plugin import images, masking, modelsplit, prompt_parser, sd_hijack, __conf__, SDState
+from src_core.lib import devices, imagelib
 from src_plugins.sd1111_plugin.options import opts
 from src_core.classes.prompt_job import prompt_job
 
@@ -95,8 +96,8 @@ class sd_txt(sd_job):
         super().__init__(**kwargs)
         self.enable_hr = enable_hr
         self.chg = chg
-        self.w1 = w1 # First phase width
-        self.h1 = h1 # First phase height
+        self.w1 = w1  # First phase width
+        self.h1 = h1  # First phase height
         self.truncate_x = 0
         self.truncate_y = 0
 
@@ -167,7 +168,7 @@ class sd_txt(sd_job):
 
         samples = samples[:, :, self.truncate_y // 2:samples.shape[2] - self.truncate_y // 2, self.truncate_x // 2:samples.shape[3] - self.truncate_x // 2]
 
-        if SDOptions.use_scale_latent_for_hires_fix:
+        if src_plugins.sd1111_plugin.__conf__.use_scale_latent_for_hires_fix:
             samples = torch.nn.functional.interpolate(samples, size=(self.height // opt_f, self.width // opt_f), mode="bilinear")
 
         else:
@@ -179,7 +180,7 @@ class sd_txt(sd_job):
                 x_sample = 255. * np.moveaxis(x_sample.cpu().numpy(), 0, 2)
                 x_sample = x_sample.astype(np.uint8)
                 image = Image.fromarray(x_sample)
-                image = images.resize_image(0, image, self.width, self.height)
+                image = imagelib.resize_image('lanczos', image, self.width, self.height)
                 image = np.array(image).astype(np.float32) / 255.0
                 image = np.moveaxis(image, 2, 0)
                 batch_images.append(image)
@@ -206,33 +207,35 @@ class sd_txt(sd_job):
 
 class sd_img(sd_job):
     def __init__(self,
-                 init_images: list = None,
-                 resize_mode: int = 0,
+                 image: list = None,
+                 resize: str = 'lanczos',
                  chg: float = 0.75,
-                 mask: Any = None,
+                 mask: Image.Image = None,
                  mask_blur: int = 4,
-                 inpainting_fill: int = 0,
-                 inpaint_full_res: bool = True,
-                 inpaint_full_res_padding: int = 0,
-                 mask_invert: int = 0,
+                 mask_invert: bool = 0,
+                 inpaint_fill: int = 0,
+                 inpaint_fullres: bool = True,
+                 inpaint_fullres_pad: int = 0,
                  **kwargs):
         super().__init__(**kwargs)
 
-        self.init_images = init_images
-        self.resize_mode: int = resize_mode
-        self.denoising_strength: float = chg
+        self.init_images = image
         self.init_latent = None
-        self.image_mask = mask
-        self.latent_mask = None
-        self.mask_for_overlay = None
+        self.resize_mode = resize
+        self.chg = chg
+        self.img_mask = mask
         self.mask_blur = mask_blur
-        self.inpainting_fill = inpainting_fill
-        self.inpaint_full_res = inpaint_full_res
-        self.inpaint_full_res_padding = inpaint_full_res_padding
-        self.mask_invert = mask_invert
-        self.mask = None
-        self.nmask = None
-        self.image_conditioning = None
+        self.mask_inv = mask_invert
+        self.inpaint_fill = inpaint_fill
+        self.inpaint_fullres = inpaint_fullres
+        self.inpaint_fullres_pad = inpaint_fullres_pad
+
+        # State
+        self.mask = None # tensor
+        self.maskm1 = None # tensor (1-mask)
+        self.lmask = None # tensor (latent encoding)
+        self.condmask = None
+        self.overlay_mask = None # TODO idk what overlay is
 
     def init(self, model, all_prompts, all_seeds, all_subseeds):
         from src_plugins.sd1111_plugin import sd_samplers
@@ -242,55 +245,55 @@ class sd_img(sd_job):
 
         crop_region = None
 
-        if self.image_mask is not None:
-            self.image_mask = self.image_mask.convert('L')
+        if self.img_mask is not None:
+            self.img_mask = self.img_mask.convert('L')
 
-            if self.mask_invert:
-                self.image_mask = ImageOps.invert(self.image_mask)
+            if self.mask_inv:
+                self.img_mask = ImageOps.invert(self.img_mask)
 
             if self.mask_blur > 0:
-                self.image_mask = self.image_mask.filter(ImageFilter.GaussianBlur(self.mask_blur))
+                self.img_mask = self.img_mask.filter(ImageFilter.GaussianBlur(self.mask_blur))
 
-            if self.inpaint_full_res:
-                self.mask_for_overlay = self.image_mask
-                mask = self.image_mask.convert('L')
-                crop_region = masking.get_crop_region(np.array(mask), self.inpaint_full_res_padding)
+            if self.inpaint_fullres:
+                self.overlay_mask = self.img_mask
+                mask = self.img_mask.convert('L')
+                crop_region = masking.get_crop_region(np.array(mask), self.inpaint_fullres_pad)
                 crop_region = masking.expand_crop_region(crop_region, self.width, self.height, mask.width, mask.height)
                 x1, y1, x2, y2 = crop_region
 
                 mask = mask.crop(crop_region)
-                self.image_mask = images.resize_image(2, mask, self.width, self.height)
+                self.img_mask = imagelib.resize_image(2, mask, self.width, self.height)
                 self.paste_to = (x1, y1, x2 - x1, y2 - y1)
             else:
-                self.image_mask = images.resize_image(self.resize_mode, self.image_mask, self.width, self.height)
-                np_mask = np.array(self.image_mask)
+                self.img_mask = imagelib.resize_image(self.resize_mode, self.img_mask, self.width, self.height)
+                np_mask = np.array(self.img_mask)
                 np_mask = np.clip((np_mask.astype(np.float32)) * 2, 0, 255).astype(np.uint8)
-                self.mask_for_overlay = Image.fromarray(np_mask)
+                self.overlay_mask = Image.fromarray(np_mask)
 
             self.overlay_images = []
 
-        latent_mask = self.latent_mask if self.latent_mask is not None else self.image_mask
+        maskl = self.lmask if self.lmask is not None else self.img_mask
 
         imgs = []
         for img in self.init_images:
             image = img.convert("RGB")
 
             if crop_region is None:
-                image = images.resize_image(self.resize_mode, image, self.width, self.height)
+                image = imagelib.resize_image(self.resize_mode, image, self.width, self.height)
 
-            if self.image_mask is not None:
+            if self.img_mask is not None:
                 image_masked = Image.new('RGBa', (image.width, image.height))
-                image_masked.paste(image.convert("RGBA").convert("RGBa"), mask=ImageOps.invert(self.mask_for_overlay.convert('L')))
+                image_masked.paste(image.convert("RGBA").convert("RGBa"), mask=ImageOps.invert(self.overlay_mask.convert('L')))
 
                 self.overlay_images.append(image_masked.convert('RGBA'))
 
             if crop_region is not None:
                 image = image.crop(crop_region)
-                image = images.resize_image(2, image, self.width, self.height)
+                image = imagelib.resize_image(2, image, self.width, self.height)
 
-            if self.image_mask is not None:
-                if self.inpainting_fill != 1:
-                    image = masking.fill(image, latent_mask)
+            if self.img_mask is not None:
+                if self.inpaint_fill != 1:
+                    image = masking.fill(image, maskl)
 
             image = np.array(image).astype(np.float32) / 255.0
             image = np.moveaxis(image, 2, 0)
@@ -314,8 +317,8 @@ class sd_img(sd_job):
 
         self.init_latent = self.sd_model.get_first_stage_encoding(self.sd_model.encode_first_stage(image))
 
-        if self.image_mask is not None:
-            init_mask = latent_mask
+        if self.img_mask is not None:
+            init_mask = maskl
             latmask = init_mask.convert('RGB').resize((self.init_latent.shape[3], self.init_latent.shape[2]))
             latmask = np.moveaxis(np.array(latmask, dtype=np.float32), 2, 0) / 255
             latmask = latmask[0]
@@ -323,17 +326,17 @@ class sd_img(sd_job):
             latmask = np.tile(latmask[None], (4, 1, 1))
 
             self.mask = torch.asarray(1.0 - latmask).to(devices.device).type(self.sd_model.dtype)
-            self.nmask = torch.asarray(latmask).to(devices.device).type(self.sd_model.dtype)
+            self.maskm1 = torch.asarray(latmask).to(devices.device).type(self.sd_model.dtype)
 
             # this needs to be fixed to be done in sample() using actual seeds for batches
-            if self.inpainting_fill == 2:
-                self.init_latent = self.init_latent * self.mask + create_random_tensors(self.init_latent.shape[1:], all_seeds[0:self.init_latent.shape[0]]) * self.nmask
-            elif self.inpainting_fill == 3:
+            if self.inpaint_fill == 2:
+                self.init_latent = self.init_latent * self.mask + create_random_tensors(self.init_latent.shape[1:], all_seeds[0:self.init_latent.shape[0]]) * self.maskm1
+            elif self.inpaint_fill == 3:
                 self.init_latent = self.init_latent * self.mask
 
         if self.sampler.conditioning_key in {'hybrid', 'concat'}:
-            if self.image_mask is not None:
-                conditioning_mask = np.array(self.image_mask.convert("L"))
+            if self.img_mask is not None:
+                conditioning_mask = np.array(self.img_mask.convert("L"))
                 conditioning_mask = conditioning_mask.astype(np.float32) / 255.0
                 conditioning_mask = torch.from_numpy(conditioning_mask[None, None])
 
@@ -350,10 +353,10 @@ class sd_img(sd_job):
             # Create the concatenated conditioning tensor to be fed to `c_concat`
             conditioning_mask = torch.nn.functional.interpolate(conditioning_mask, size=self.init_latent.shape[-2:])
             conditioning_mask = conditioning_mask.expand(conditioning_image.shape[0], -1, -1, -1)
-            self.image_conditioning = torch.cat([conditioning_mask, conditioning_image], dim=1)
-            self.image_conditioning = self.image_conditioning.to(devices.device).type(self.sd_model.dtype)
+            self.condmask = torch.cat([conditioning_mask, conditioning_image], dim=1)
+            self.condmask = self.condmask.to(devices.device).type(self.sd_model.dtype)
         else:
-            self.image_conditioning = torch.zeros(
+            self.condmask = torch.zeros(
                     self.init_latent.shape[0], 5, 1, 1,
                     dtype=self.init_latent.dtype,
                     device=self.init_latent.device
@@ -361,10 +364,10 @@ class sd_img(sd_job):
 
     def sample(self, conditioning, unconditional_conditioning, seeds, subseeds, subseed_strength):
         x = create_random_tensors([opt_C, self.height // opt_f, self.width // opt_f], seeds=seeds, subseeds=subseeds, subseed_strength=self.subseed_strength, seed_resize_from_h=self.seed_resize_from_h, seed_resize_from_w=self.seed_resize_from_w, p=self)
-        samples = self.sampler.sample_img2img(self, self.init_latent, x, conditioning, unconditional_conditioning, image_conditioning=self.image_conditioning)
+        samples = self.sampler.sample_img2img(self, self.init_latent, x, conditioning, unconditional_conditioning, image_conditioning=self.condmask)
 
         if self.mask is not None:
-            samples = samples * self.nmask + self.init_latent * self.mask
+            samples = samples * self.maskm1 + self.init_latent * self.mask
 
         del x
         devices.torch_gc()
@@ -409,7 +412,7 @@ def process_images(p: sd_job):
     # if os.path.exists(SDPlugin.embeddings_dir) and not p.do_not_reload_embeddings:
     #     modules.stable_diffusion_auto2222.sd_hijack.model_hijack.embedding_db.load_textual_inversion_embeddings()
 
-    output_images = []
+    ret = []
 
     with torch.no_grad(), SDState.sdmodel.ema_scope():
         with devices.autocast():
@@ -440,7 +443,7 @@ def process_images(p: sd_job):
 
         del samples_ddim
 
-        if SDOptions.lowvram or SDOptions.medvram:
+        if src_plugins.sd1111_plugin.__conf__.lowvram or src_plugins.sd1111_plugin.__conf__.medvram:
             modelsplit.send_everything_to_cpu()
 
         devices.torch_gc()
@@ -458,7 +461,7 @@ def process_images(p: sd_job):
             # if opts.samples_save and not p.do_not_save_samples:
             #     images.save_image(image, p.outpath_samples, "", seeds[i], prompts[i], opts.samples_format, metadata=infotext(n, i), p=p)
 
-            output_images.append(image)
+            ret.append(image)
 
         del x_samples_ddim
 
@@ -466,7 +469,10 @@ def process_images(p: sd_job):
 
     devices.torch_gc()
 
-    return output_images
+    if len(ret) == 1:
+        return ret[0]
+
+    return ret
 
 
 def store_latent(decoded):

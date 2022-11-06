@@ -9,7 +9,8 @@ import torch
 from PIL import Image
 
 import src_plugins
-import src_plugins.sd1111_plugin.SDOptions
+import src_plugins.sd1111_plugin.__conf__
+import src_plugins.sd1111_plugin.__conf__
 import src_plugins.sd1111_plugin.SDState
 from src_plugins.sd1111_plugin import prompt_parser, sd_paths
 from src_core.lib import devices
@@ -179,7 +180,7 @@ class VanillaStableDiffusionSampler:
                 setattr(self.sampler, fieldname, self.p_sample_ddim_hook)
 
         self.mask = p.mask if hasattr(p, 'mask') else None
-        self.nmask = p.nmask if hasattr(p, 'nmask') else None
+        self.nmask = p.maskm1 if hasattr(p, 'nmask') else None
 
     def sample_img2img(self, p, x, noise, conditioning, unconditional_conditioning, steps=None, image_conditioning=None):
         steps, t_enc = setup_img2img_steps(p, steps)
@@ -256,7 +257,7 @@ class CFGDenoiser(torch.nn.Module):
         if tensor.shape[1] == uncond.shape[1]:
             cond_in = torch.cat([tensor, uncond])
 
-            if src_plugins.sd1111_plugin.SDOptions.batch_cond_uncond:
+            if src_plugins.sd1111_plugin.__conf__.batch_cond_uncond:
                 x_out = self.inner_model(x_in, sigma_in, cond={"c_crossattn": [cond_in], "c_concat": [image_cond_in]})
             else:
                 x_out = torch.zeros_like(x_in)
@@ -266,7 +267,7 @@ class CFGDenoiser(torch.nn.Module):
                     x_out[a:b] = self.inner_model(x_in[a:b], sigma_in[a:b], cond={"c_crossattn": [cond_in[a:b]], "c_concat": [image_cond_in[a:b]]})
         else:
             x_out = torch.zeros_like(x_in)
-            batch_size = batch_size * 2 if src_plugins.sd1111_plugin.SDOptions.batch_cond_uncond else batch_size
+            batch_size = batch_size * 2 if src_plugins.sd1111_plugin.__conf__.batch_cond_uncond else batch_size
             for batch_offset in range(0, tensor.shape[0], batch_size):
                 a = batch_offset
                 b = min(a + batch_size, tensor.shape[0])
@@ -362,7 +363,7 @@ class KDiffusionSampler:
 
     def initialize(self, p):
         self.model_wrap_cfg.mask = p.mask if hasattr(p, 'mask') else None
-        self.model_wrap_cfg.nmask = p.nmask if hasattr(p, 'nmask') else None
+        self.model_wrap_cfg.nmask = p.maskm1 if hasattr(p, 'nmask') else None
         self.model_wrap.progress_i = 0
         self.sampler_noise_index = 0
         self.eta = p.eta or 1.0

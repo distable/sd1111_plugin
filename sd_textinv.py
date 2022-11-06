@@ -346,7 +346,7 @@ def train_embedding(embedding_name, learn_rate, batch_size, data_root, log_direc
                 except Exception as e:
                     vectorSize = '?'
 
-                checkpoint = sd_models.select_checkpoint()
+                checkpoint = sd_models.get_checkpoint()
                 footer_left = checkpoint.model_name
                 footer_mid = '[{}]'.format(checkpoint.hash)
                 footer_right = '{}v {}s'.format(vectorSize, embedding.progress_i)
@@ -373,7 +373,7 @@ def train_embedding(embedding_name, learn_rate, batch_size, data_root, log_direc
 # </p>
 # """
 
-    checkpoint = sd_models.select_checkpoint()
+    checkpoint = sd_models.get_checkpoint()
 
     embedding.sd_checkpoint = checkpoint.hash
     embedding.sd_checkpoint_name = checkpoint.model_name

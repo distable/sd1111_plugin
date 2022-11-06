@@ -10,8 +10,9 @@ import torch
 from torchvision import transforms
 from torchvision.transforms.functional import InterpolationMode
 
+import src_plugins.sd1111_plugin.__conf__
 import src_plugins.sd1111_plugin.options
-import src_plugins.sd1111_plugin.SDOptions
+import src_plugins.sd1111_plugin.__conf__
 import src_plugins.sd1111_plugin.SDPlugin
 import src_plugins.sd1111_plugin.modelsplit
 
@@ -70,14 +71,14 @@ class InterrogateModels:
     def load(self):
         if self.blip_model is None:
             self.blip_model = self.load_blip_model()
-            if not src_plugins.sd1111_plugin.SDOptions.no_half and not self.running_on_cpu:
+            if not src_plugins.sd1111_plugin.__conf__.no_half and not self.running_on_cpu:
                 self.blip_model = self.blip_model.half()
 
         self.blip_model = self.blip_model.to(devices.device_interrogate)
 
         if self.clip_model is None:
             self.clip_model, self.clip_preprocess = self.load_clip_model()
-            if not src_plugins.sd1111_plugin.SDOptions.no_half and not self.running_on_cpu:
+            if not src_plugins.sd1111_plugin.__conf__.no_half and not self.running_on_cpu:
                 self.clip_model = self.clip_model.half()
 
         self.clip_model = self.clip_model.to(devices.device_interrogate)
@@ -136,7 +137,7 @@ class InterrogateModels:
 
         try:
 
-            if src_plugins.sd1111_plugin.SDOptions.lowvram or src_plugins.sd1111_plugin.SDOptions.medvram:
+            if src_plugins.sd1111_plugin.__conf__.lowvram or src_plugins.sd1111_plugin.__conf__.medvram:
                 lowvram.send_everything_to_cpu()
                 devices.torch_gc()
 
@@ -150,7 +151,7 @@ class InterrogateModels:
 
             clip_image = self.clip_preprocess(pil_image).unsqueeze(0).type(self.dtype).to(devices.device_interrogate)
 
-            precision_scope = torch.autocast if src_plugins.sd1111_plugin.SDOptions.precision == "autocast" else contextlib.nullcontext
+            precision_scope = torch.autocast if src_plugins.sd1111_plugin.__conf__.precision == "autocast" else contextlib.nullcontext
             with torch.no_grad(), precision_scope("cuda"):
                 image_features = self.clip_model.encode_image(clip_image).type(self.dtype)
 

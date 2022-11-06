@@ -14,7 +14,7 @@ import src_core.classes.paths
 import src_plugins.sd1111_plugin.sd_paths
 import src_plugins.sd1111_plugin.sd_textinv_dataset
 import src_plugins.sd1111_plugin.SDState
-from src_plugins.sd1111_plugin import sd_models, SDOptions, SDState
+from src_plugins.sd1111_plugin import sd_models, __conf__, SDState
 from src_core.lib import devices
 from src_plugins.sd1111_plugin.sd_textinv_learn_schedule import LearnRateScheduler
 
@@ -100,7 +100,7 @@ class HypernetworkModule(torch.nn.Module):
 
 
 def apply_strength(value=None):
-    HypernetworkModule.multiplier = value if value is not None else SDOptions.opts.sd_hypernetwork_strength
+    HypernetworkModule.multiplier = value if value is not None else __conf__.opts.sd_hypernetwork_strength
 
 
 class Hypernetwork:
@@ -321,7 +321,7 @@ def train_hypernetwork(hypernetwork_name, learn_rate, batch_size, data_root, log
     filename = os.path.join(src_core.classes.paths.plug_hypernetworks, f'{hypernetwork_name}.pt')
 
     log_directory = os.path.join(log_directory, datetime.datetime.now().strftime("%Y-%m-%d"), hypernetwork_name)
-    unload = SDOptions.opts.unload_models_when_training
+    unload = __conf__.opts.unload_models_when_training
 
     if save_hypernetwork_every > 0:
         hypernetwork_dir = os.path.join(log_directory, "hypernetworks")
@@ -337,7 +337,7 @@ def train_hypernetwork(hypernetwork_name, learn_rate, batch_size, data_root, log
 
     # SDPlugin.state.textinfo = f"Preparing dataset from {html.escape(data_root)}..."
     with torch.autocast("cuda"):
-        ds = src_plugins.textual_inversion.dataset.PersonalizedBase(data_root=data_root, width=training_width, height=training_height, repeats=SDOptions.opts.training_image_repeats_per_epoch, placeholder_token=hypernetwork_name, model=SDState.sdmodel, device=devices.device, template_file=template_file, include_cond=True, batch_size=batch_size)
+        ds = src_plugins.textual_inversion.dataset.PersonalizedBase(data_root=data_root, width=training_width, height=training_height, repeats=__conf__.opts.training_image_repeats_per_epoch, placeholder_token=hypernetwork_name, model=SDState.sdmodel, device=devices.device, template_file=template_file, include_cond=True, batch_size=batch_size)
     if unload:
         SDState.sdmodel.cond_stage_model.to(devices.cpu)
         SDState.sdmodel.first_stage_model.to(devices.cpu)
@@ -459,7 +459,7 @@ def train_hypernetwork(hypernetwork_name, learn_rate, batch_size, data_root, log
 
             if image is not None:
                 # SDPlugin.state.current_image = image
-                last_saved_image, last_text_info = images.save_image(image, images_dir, "", p.seed, p.prompt, SDOptions.opts.samples_format, processed.infotexts[0], p=p, forced_filename=forced_filename)
+                last_saved_image, last_text_info = images.save_image(image, images_dir, "", p.seed, p.prompt, __conf__.opts.samples_format, processed.infotexts[0], p=p, forced_filename=forced_filename)
                 last_saved_image += f", prompt: {preview_text}"
 
         # SDPlugin.state.job_no = hypernetwork.step
@@ -475,7 +475,7 @@ def train_hypernetwork(hypernetwork_name, learn_rate, batch_size, data_root, log
 # """
 
     report_statistics(loss_dict)
-    checkpoint = sd_models.select_checkpoint()
+    checkpoint = sd_models.get_checkpoint()
 
     hypernetwork.sd_checkpoint = checkpoint.hash
     hypernetwork.sd_checkpoint_name = checkpoint.model_name

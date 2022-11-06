@@ -4,9 +4,10 @@ import ldm.modules.attention
 import ldm.modules.diffusionmodules.model
 import torch
 
-import src_plugins.sd1111_plugin.SDOptions
+import src_plugins.sd1111_plugin.__conf__
+import src_plugins.sd1111_plugin.__conf__
 from src_plugins.sd1111_plugin.sd_hijack_optimizations import invokeAI_mps_available
-from src_plugins.sd1111_plugin import prompt_parser, sd_hijack_optimizations, sd_paths
+from src_plugins.sd1111_plugin import __conf__, prompt_parser, sd_hijack_optimizations, sd_paths
 from src_core.lib import devices
 from src_plugins.sd1111_plugin.options import opts
 from src_plugins.sd1111_plugin.SDAttention import SDAttention
@@ -43,7 +44,7 @@ diffusionmodules_model_AttnBlock_forward = ldm.modules.diffusionmodules.model.At
 
 def apply_optimizations():
     ldm.modules.diffusionmodules.model.nonlinearity = torch.nn.functional.silu
-    mode = src_plugins.sd1111_plugin.SDOptions.attention
+    mode = __conf__.attention
 
     # Validate
     # ----------------------------------------

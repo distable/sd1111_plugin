@@ -5,8 +5,8 @@ from src_core.classes import paths
 # default_ckpt = 'model.ckpt'
 
 default_ckpt = paths.plug_res / 'sd1111' / 'sd-v1-5.ckpt'
+vae_path = paths.plug_res / 'sd1111' / 'vae.vae.pt'
 config = paths.plug_repos / 'sd1111' / 'stable_diffusion' / 'configs/stable-diffusion/v1-inference.yaml'
-vae_path = None
 
 
 def res(join=""):
