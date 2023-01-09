@@ -115,5 +115,5 @@ def run(code, task):
         print(traceback.format_exc(), file=sys.stderr)
 
 
-unsafe_torch_load = torch.load
-torch.load = load
+# torch.unsafe_torch_load = torch.load
+# torch.load = load

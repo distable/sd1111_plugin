@@ -1,1 +1,1 @@
-from . import __install__
+# from . import __install__

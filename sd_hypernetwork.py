@@ -67,8 +67,8 @@ class HypernetworkModule(torch.nn.Module):
         else:
             for layer in self.linear:
                 if type(layer) == torch.nn.Linear or type(layer) == torch.nn.LayerNorm:
-                    layer.weight.context.normal_(mean=0.0, std=0.01)
-                    layer.bias.context.zero_()
+                    layer.weight.ctx.normal_(mean=0.0, std=0.01)
+                    layer.bias.ctx.zero_()
 
         self.to(devices.device)
 

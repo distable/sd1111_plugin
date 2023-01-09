@@ -7,3 +7,4 @@ class SDAttention(Enum):
     SPLIT_INVOKE = 2
     SPLIT_DOGGETT = 3
     XFORMERS = 4
+    SUBQUAD = 5

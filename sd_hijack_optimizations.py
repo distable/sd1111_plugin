@@ -8,6 +8,7 @@ from torch import einsum
 
 import src_plugins.sd1111_plugin.SDState
 from src_plugins.sd1111_plugin import sd_hypernetwork
+from src_plugins.sd1111_plugin.sub_quadratic_attention import efficient_dot_product_attention
 
 
 # see https://github.com/basujindal/stable-diffusion/pull/117 for discussion
@@ -229,6 +230,7 @@ def xformers_attention_forward(self, x, context=None, mask=None):
 
     q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b n h d', h=h), (q_in, k_in, v_in))
     del q_in, k_in, v_in
+    import xformers
     out = xformers.ops.memory_efficient_attention(q, k, v, attn_bias=None)
 
     out = rearrange(out, 'b n h d -> b n (h d)', h=h)
@@ -311,9 +313,92 @@ def xformers_attnblock_forward(self, x):
         q = q.contiguous()
         k = k.contiguous()
         v = v.contiguous()
+        import xformers
         out = xformers.ops.memory_efficient_attention(q, k, v)
         out = rearrange(out, 'b (h w) c -> b c h w', h=h)
         out = self.proj_out(out)
         return x + out
     except NotImplementedError:
         return cross_attention_attnblock_forward(self, x)
+
+
+# Based on Birch-san's modified implementation of sub-quadratic attention from https://github.com/Birch-san/diffusers/pull/1
+def sub_quad_attention_forward(self, x, context=None, mask=None):
+    assert mask is None, "attention-mask not currently implemented for SubQuadraticCrossAttnProcessor."
+    from src_plugins.sd1111_plugin import __conf__
+
+    h = self.heads
+
+    q = self.to_q(x)
+    context = default(context, x)
+
+    context_k, context_v = sd_hypernetwork.apply_hypernetwork(src_plugins.sd1111_plugin.SDState.hnmodel, context)
+    k = self.to_k(context_k)
+    v = self.to_v(context_v)
+    del context, context_k, context_v, x
+
+    q = q.unflatten(-1, (h, -1)).transpose(1, 2).flatten(end_dim=1)
+    k = k.unflatten(-1, (h, -1)).transpose(1, 2).flatten(end_dim=1)
+    v = v.unflatten(-1, (h, -1)).transpose(1, 2).flatten(end_dim=1)
+
+    x = sub_quad_attention(q, k, v, q_chunk_size=__conf__.sub_quad_q_chunk_size, kv_chunk_size=__conf__.sub_quad_kv_chunk_size, chunk_threshold_bytes=__conf__.sub_quad_chunk_threshold, use_checkpoint=self.training)
+
+    x = x.unflatten(0, (-1, h)).transpose(1, 2).flatten(start_dim=2)
+
+    out_proj, dropout = self.to_out
+    x = out_proj(x)
+    x = dropout(x)
+
+    return x
+
+
+def sub_quad_attention(q, k, v, q_chunk_size=1024, kv_chunk_size=None, kv_chunk_size_min=None, chunk_threshold_bytes=None, use_checkpoint=True):
+    bytes_per_token = torch.finfo(q.dtype).bits // 8
+    batch_x_heads, q_tokens, _ = q.shape
+    _, k_tokens, _ = k.shape
+    qk_matmul_size_bytes = batch_x_heads * bytes_per_token * q_tokens * k_tokens
+
+    if chunk_threshold_bytes is None:
+        from src_core.lib.devices import get_available_vram
+        chunk_threshold_bytes = int(get_available_vram() * 0.4)
+    elif chunk_threshold_bytes == 0:
+        chunk_threshold_bytes = None
+
+    if kv_chunk_size_min is None:
+        kv_chunk_size_min = (chunk_threshold_bytes - batch_x_heads * min(q_chunk_size, q_tokens) * q.shape[2]) // (batch_x_heads * bytes_per_token * (k.shape[2] + v.shape[2]))
+    elif kv_chunk_size_min == 0:
+        kv_chunk_size_min = None
+
+    if chunk_threshold_bytes is not None and qk_matmul_size_bytes <= chunk_threshold_bytes:
+        # the big matmul fits into our memory limit; do everything in 1 chunk,
+        # i.e. send it down the unchunked fast-path
+        q_chunk_size = q_tokens
+        kv_chunk_size = k_tokens
+
+    return efficient_dot_product_attention(
+            q,
+            k,
+            v,
+            query_chunk_size=q_chunk_size,
+            kv_chunk_size=kv_chunk_size,
+            kv_chunk_size_min=kv_chunk_size_min,
+            use_checkpoint=use_checkpoint,
+    )
+
+
+def sub_quad_attnblock_forward(self, x):
+    from src_plugins.sd1111_plugin import __conf__
+    h_ = x
+    h_ = self.norm(h_)
+    q = self.q(h_)
+    k = self.k(h_)
+    v = self.v(h_)
+    b, c, h, w = q.shape
+    q, k, v = map(lambda t: rearrange(t, 'b c h w -> b (h w) c'), (q, k, v))
+    q = q.contiguous()
+    k = k.contiguous()
+    v = v.contiguous()
+    out = sub_quad_attention(q, k, v, q_chunk_size=__conf__.sub_quad_q_chunk_size, kv_chunk_size=__conf__.sub_quad_kv_chunk_size, chunk_threshold_bytes=__conf__.sub_quad_chunk_threshold, use_checkpoint=self.training)
+    out = rearrange(out, 'b (h w) c -> b c h w', h=h)
+    out = self.proj_out(out)
+    return x + out

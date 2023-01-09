@@ -1,6 +1,7 @@
 import torch
 
 from src_core.lib import devices
+from src_core.classes.printlib import gputrace
 
 module_in_gpu = None
 cpu = torch.device("cpu")
@@ -10,9 +11,9 @@ def send_everything_to_cpu():
     global module_in_gpu
 
     if module_in_gpu is not None:
-        module_in_gpu.to(cpu)
-
-    module_in_gpu = None
+        with gputrace(f"send_to_cpu {module_in_gpu.__class__}", True):
+            module_in_gpu.to(cpu)
+            module_in_gpu = None
 
 
 def setup_for_low_vram(sd_model, use_medvram):
@@ -31,21 +32,33 @@ def setup_for_low_vram(sd_model, use_medvram):
             return
 
         if module_in_gpu is not None:
-            module_in_gpu.to(cpu)
+            with gputrace(f"send_to_cpu {module_in_gpu.__class__}", True):
+                module_in_gpu.to(cpu)
 
-        module.to(devices.device)
-        module_in_gpu = module
+        with gputrace(f"send_to_gpu {module.__class__}", True):
+            module.to(devices.device)
+            module_in_gpu = module
 
     # see below for register_forward_pre_hook;
     # first_stage_model does not use forward(), it uses encode/decode, so register_forward_pre_hook is
     # useless here, and we just replace those methods
-    def first_stage_model_encode_wrap(self, encoder, x):
-        send_me_to_gpu(self, None)
-        return encoder(x)
 
-    def first_stage_model_decode_wrap(self, decoder, z):
-        send_me_to_gpu(self, None)
-        return decoder(z)
+    first_stage_model = sd_model.first_stage_model
+    first_stage_model_encode = sd_model.first_stage_model.encode
+    first_stage_model_decode = sd_model.first_stage_model.decode
+
+    def first_stage_model_encode_wrap(x):
+        send_me_to_gpu(first_stage_model, None)
+        return first_stage_model_encode(x)
+
+    def first_stage_model_decode_wrap(z):
+        send_me_to_gpu(first_stage_model, None)
+        return first_stage_model_decode(z)
+
+        # for SD1, cond_stage_model is CLIP and its NN is in the tranformer frield, but for SD2, it's open clip, and it's in model field
+
+    if hasattr(sd_model.cond_stage_model, 'model'):
+        sd_model.cond_stage_model.transformer = sd_model.cond_stage_model.model
 
     # remove three big modules, cond, first_stage, and unet from the model and then
     # send the model to GPU. Then put modules back. the modules will be in CPU.
@@ -57,9 +70,13 @@ def setup_for_low_vram(sd_model, use_medvram):
     # register hooks for those the first two models
     sd_model.cond_stage_model.transformer.register_forward_pre_hook(send_me_to_gpu)
     sd_model.first_stage_model.register_forward_pre_hook(send_me_to_gpu)
-    sd_model.first_stage_model.encode = lambda x, en=sd_model.first_stage_model.encode: first_stage_model_encode_wrap(sd_model.first_stage_model, en, x)
-    sd_model.first_stage_model.decode = lambda z, de=sd_model.first_stage_model.decode: first_stage_model_decode_wrap(sd_model.first_stage_model, de, z)
+    sd_model.first_stage_model.encode = first_stage_model_encode_wrap
+    sd_model.first_stage_model.decode = first_stage_model_decode_wrap
     parents[sd_model.cond_stage_model.transformer] = sd_model.cond_stage_model
+
+    if hasattr(sd_model.cond_stage_model, 'model'):
+        sd_model.cond_stage_model.model = sd_model.cond_stage_model.transformer
+        del sd_model.cond_stage_model.transformer
 
     if use_medvram:
         sd_model.model.register_forward_pre_hook(send_me_to_gpu)

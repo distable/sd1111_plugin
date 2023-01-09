@@ -4,15 +4,20 @@ from typing import Any, Dict
 
 import numpy as np
 import torch
+from einops import rearrange, repeat
 from PIL import Image, ImageFilter, ImageOps
 
 import src_plugins.sd1111_plugin.__conf__
 from src_core import plugins
 # some of those options should not be changed at all because they would break the model, so I removed them from options.
-from src_plugins.sd1111_plugin import images, masking, modelsplit, prompt_parser, sd_hijack, __conf__, SDState
+from src_plugins.sd1111_plugin import images, masking, modelsplit, prompt_parser, sd_hijack, SDState
 from src_core.lib import devices, imagelib
 from src_plugins.sd1111_plugin.options import opts
 from src_core.classes.prompt_job import prompt_job
+
+# from ldm.data.util import AddMiDaS
+# from ldm.models.diffusion.ddpm import LatentDepth2ImageDiffusion
+
 
 opt_C = 4
 opt_f = 8
@@ -31,8 +36,6 @@ class sd_job(prompt_job):
                  batch_size: int = 1,
                  steps: int = 22,
                  cfg: float = 7,
-                 w: int = 512,
-                 h: int = 512,
                  chg: float = 0.5,
                  tiling: bool = False,
                  extra_generation_params: Dict[Any, Any] = None,
@@ -43,7 +46,9 @@ class sd_job(prompt_job):
                  s_churn: float = 0.0,
                  s_tmax: float = None,
                  s_tmin: float = 0.0,
-                 s_noise: float = 1.0, **kwargs):
+                 s_noise: float = 1.0,
+                 inpainting_mask_weight: float = 1.0,
+                 **kwargs):
         super(sd_job, self).__init__(**kwargs)
         self.promptneg: str = promptneg or ""
         self.seed: int = int(seed)
@@ -51,9 +56,10 @@ class sd_job(prompt_job):
         self.subseed_strength: float = subseed_force
         self.seed_resize_from_h: int = seed_resize_from_h
         self.seed_resize_from_w: int = seed_resize_from_w
-        self.width: int = int(w)
-        self.height: int = int(h)
+        # self.width: int = int(w)
+        # self.height: int = int(h)
         self.cfg: float = float(cfg)
+        self.sampler: int = sampler
         self.sampler_id: int = sampler
         self.batch_size: int = batch_size
         self.steps: int = int(steps)
@@ -68,6 +74,7 @@ class sd_job(prompt_job):
         self.s_tmin = s_tmin
         self.s_tmax = s_tmax or float('inf')  # not representable as a standard ui option
         self.s_noise = s_noise
+        self.inpainting_mask_weight = inpainting_mask_weight
 
         if not seed_enable_extras:
             self.subseed = -1
@@ -79,23 +86,116 @@ class sd_job(prompt_job):
         self.all_seeds = None
         self.all_subseeds = None
 
+        # State
+        self.sdmodel = None
+        self.sampler = self.sampler
+
+    @property
+    def width(self):
+        return self.ctx.width or self.w
+
+    @property
+    def height(self):
+        return self.ctx.height or self.h
+
     def init(self, model, all_prompts, all_seeds, all_subseeds):
         pass
 
     def sample(self, conditioning, unconditional_conditioning, seeds, subseeds, subseed_strength):
         raise NotImplementedError()
 
+    def txt2img_image_conditioning(self, x, width=None, height=None):
+        if self.sampler.conditioning_key not in {'hybrid', 'concat'}:
+            # Dummy zero conditioning if we're not using inpainting model.
+            # Still takes up a bit of memory, but no encoder call.
+            # Pretty sure we can just make this a 1x1 image since its not going to be used besides its batch size.
+            return x.new_zeros(x.shape[0], 5, 1, 1)
+        self.is_using_inpainting_conditioning = True
+        height = height or self.height
+        width = width or self.width
+        # The "masked-image" in this case will just be all zeros since the entire image is masked.
+        image_conditioning = torch.zeros(x.shape[0], 3, height, width, device=x.device)
+        image_conditioning = self.sdmodel.get_first_stage_encoding(self.sdmodel.encode_first_stage(image_conditioning))
+        # Add the fake full 1s mask to the first dimension.
+        image_conditioning = torch.nn.functional.pad(image_conditioning, (0, 0, 0, 0, 1, 0), value=1.0)
+        image_conditioning = image_conditioning.to(x.dtype)
+
+        return image_conditioning
+
+    def depth2img_image_conditioning(self, source_image):
+        # Use the AddMiDaS helper to Format our source image to suit the MiDaS model
+        transformer = AddMiDaS(model_type="dpt_hybrid")
+        transformed = transformer({"jpg": rearrange(source_image[0], "c h w -> h w c")})
+        midas_in = torch.from_numpy(transformed["midas_in"][None, ...]).to(device=devices.device)
+        midas_in = repeat(midas_in, "1 ... -> n ...", n=self.batch_size)
+
+        conditioning_image = self.sdmodel.get_first_stage_encoding(self.sdmodel.encode_first_stage(source_image))
+        conditioning = torch.nn.functional.interpolate(
+                self.sdmodel.depth_model(midas_in),
+                size=conditioning_image.shape[2:],
+                mode="bicubic",
+                align_corners=False,
+        )
+
+        (depth_min, depth_max) = torch.aminmax(conditioning)
+        conditioning = 2. * (conditioning - depth_min) / (depth_max - depth_min) - 1.
+        return conditioning
+
+    def inpainting_image_conditioning(self, source_image, latent_image, image_mask=None):
+        self.is_using_inpainting_conditioning = True
+
+        # Handle the different mask inputs
+        if image_mask is not None:
+            if torch.is_tensor(image_mask):
+                conditioning_mask = image_mask
+            else:
+                conditioning_mask = np.array(image_mask.convert("L"))
+                conditioning_mask = conditioning_mask.astype(np.float32) / 255.0
+                conditioning_mask = torch.from_numpy(conditioning_mask[None, None])
+                # Inpainting model uses a discretized mask as input, so we round to either 1.0 or 0.0
+                conditioning_mask = torch.round(conditioning_mask)
+        else:
+            conditioning_mask = source_image.new_ones(1, 1, *source_image.shape[-2:])
+        # Create another latent image, this time with a masked version of the original input.
+        # Smoothly interpolate between the masked and unmasked latent conditioning image using a parameter.
+        conditioning_mask = conditioning_mask.to(source_image.device).to(source_image.dtype)
+        conditioning_image = torch.lerp(
+                source_image,
+                source_image * (1.0 - conditioning_mask),
+                self.inpainting_mask_weight
+        )
+
+        # Encode the new masked image using first stage of network.
+        conditioning_image = self.sdmodel.get_first_stage_encoding(self.sdmodel.encode_first_stage(conditioning_image))
+        # Create the concatenated conditioning tensor to be fed to `c_concat`
+        conditioning_mask = torch.nn.functional.interpolate(conditioning_mask, size=latent_image.shape[-2:])
+        conditioning_mask = conditioning_mask.expand(conditioning_image.shape[0], -1, -1, -1)
+        image_conditioning = torch.cat([conditioning_mask, conditioning_image], dim=1)
+        image_conditioning = image_conditioning.to(devices.device).type(self.sdmodel.dtype)
+
+        return image_conditioning
+
+    def img2img_image_conditioning(self, source_image, latent_image, image_mask=None):
+        # HACK: Using introspection as the Depth2Image model doesn't appear to uniquely
+        # identify itself with a field common to all models. The conditioning_key is also hybrid.
+        if isinstance(self.sdmodel, LatentDepth2ImageDiffusion):
+            return self.depth2img_image_conditioning(source_image)
+
+        if self.sampler.conditioning_key in {'hybrid', 'concat'}:
+            return self.inpainting_image_conditioning(source_image, latent_image, image_mask=image_mask)
+
+        # Dummy zero conditioning if we're not using inpainting or depth model.
+        return latent_image.new_zeros(latent_image.shape[0], 5, 1, 1)
+
 
 class sd_txt(sd_job):
     def __init__(self,
                  enable_hr: bool = False,
-                 chg: float = 0.75,  # short for "change", also known as denoising strength
                  w1: int = 0,  # first phase width
                  h1: int = 0,  # first phase height
                  **kwargs):
         super().__init__(**kwargs)
         self.enable_hr = enable_hr
-        self.chg = chg
         self.w1 = w1  # First phase width
         self.h1 = h1  # First phase height
         self.truncate_x = 0
@@ -157,42 +257,69 @@ class sd_txt(sd_job):
 
         return image_conditioning
 
+
     def sample(self, conditioning, unconditional_conditioning, seeds, subseeds, subseed_strength):
+        from src_plugins.sd1111_plugin import sd_samplers
+
+        self.sampler = sd_samplers.create_sampler(self.sampler_id, self.sdmodel)
+
         if not self.enable_hr:
             x = create_random_tensors([opt_C, self.height // opt_f, self.width // opt_f], seeds=seeds, subseeds=subseeds, subseed_strength=self.subseed_strength, seed_resize_from_h=self.seed_resize_from_h, seed_resize_from_w=self.seed_resize_from_w, p=self)
-            samples = self.sampler.sample(self, x, conditioning, unconditional_conditioning, image_conditioning=self.create_dummy_mask(x))
+            samples = self.sampler.sample(self, x, conditioning, unconditional_conditioning, image_conditioning=self.txt2img_image_conditioning(x))
             return samples
 
-        x = create_random_tensors([opt_C, self.h1 // opt_f, self.w1 // opt_f], seeds=seeds, subseeds=subseeds, subseed_strength=self.subseed_strength, seed_resize_from_h=self.seed_resize_from_h, seed_resize_from_w=self.seed_resize_from_w, p=self)
-        samples = self.sampler.sample(self, x, conditioning, unconditional_conditioning, image_conditioning=self.create_dummy_mask(x, self.w1, self.h1))
+        x = create_random_tensors([opt_C, self.w1 // opt_f, self.h1 // opt_f], seeds=seeds, subseeds=subseeds, subseed_strength=self.subseed_strength, seed_resize_from_h=self.seed_resize_from_h, seed_resize_from_w=self.seed_resize_from_w, p=self)
+        samples = self.sampler.sample(self, x, conditioning, unconditional_conditioning, image_conditioning=self.txt2img_image_conditioning(x, self.firstphase_width, self.firstphase_height))
 
         samples = samples[:, :, self.truncate_y // 2:samples.shape[2] - self.truncate_y // 2, self.truncate_x // 2:samples.shape[3] - self.truncate_x // 2]
 
-        if src_plugins.sd1111_plugin.__conf__.use_scale_latent_for_hires_fix:
-            samples = torch.nn.functional.interpolate(samples, size=(self.height // opt_f, self.width // opt_f), mode="bilinear")
+        # """saves image before applying hires fix, if enabled in options; takes as an arguyment either an image or batch with latent space images"""
+        # def save_intermediate(image, index):
+        #     if not opts.save or self.do_not_save_samples or not opts.save_images_before_highres_fix:
+        #         return
+        #
+        #     if not isinstance(image, Image.Image):
+        #         image = sd_samplers.sample_to_image(image, index)
+        #
+        #     images.save_image(image, self.outpath_samples, "", seeds[index], prompts[index], opts.samples_format, suffix="-before-highres-fix")
 
-        else:
-            decoded_samples = decode_first_stage(self.sdmodel, samples)
-            lowres_samples = torch.clamp((decoded_samples + 1.0) / 2.0, min=0.0, max=1.0)
+        # if opts.use_scale_latent_for_hires_fix:
+        #     for i in range(samples.shape[0]):
+        #         save_intermediate(samples, i)
+        #
+        #     samples = torch.nn.functional.interpolate(samples, size=(self.height // opt_f, self.width // opt_f), mode="bilinear")
+        #
+        #     # Avoid making the inpainting conditioning unless necessary as
+        #     # this does need some extra compute to decode / encode the image again.
+        #     if getattr(self, "inpainting_mask_weight", self.inpainting_mask_weight) < 1.0:
+        #         image_conditioning = self.img2img_image_conditioning(decode_first_stage(self.sdmodel, samples), samples)
+        #     else:
+        #         image_conditioning = self.txt2img_image_conditioning(samples)
+        decoded_samples = decode_first_stage(self.sdmodel, samples)
+        lowres_samples = torch.clamp((decoded_samples + 1.0) / 2.0, min=0.0, max=1.0)
 
-            batch_images = []
-            for i, x_sample in enumerate(lowres_samples):
-                x_sample = 255. * np.moveaxis(x_sample.cpu().numpy(), 0, 2)
-                x_sample = x_sample.astype(np.uint8)
-                image = Image.fromarray(x_sample)
-                image = imagelib.resize_image('lanczos', image, self.width, self.height)
-                image = np.array(image).astype(np.float32) / 255.0
-                image = np.moveaxis(image, 2, 0)
-                batch_images.append(image)
+        batch_images = []
+        for i, x_sample in enumerate(lowres_samples):
+            x_sample = 255. * np.moveaxis(x_sample.cpu().numpy(), 0, 2)
+            x_sample = x_sample.astype(np.uint8)
+            image = Image.fromarray(x_sample)
 
-            decoded_samples = torch.from_numpy(np.array(batch_images))
-            decoded_samples = decoded_samples.to(devices.device)
-            decoded_samples = 2. * decoded_samples - 1.
+            # save_intermediate(image, i)
 
-            samples = self.sdmodel.get_first_stage_encoding(self.sdmodel.encode_first_stage(decoded_samples))
+            image = images.resize_image(0, image, self.width, self.height)
+            image = np.array(image).astype(np.float32) / 255.0
+            image = np.moveaxis(image, 2, 0)
+            batch_images.append(image)
 
-        # SDPlugin.state.nextjob()
-        # self.sampler = sd_samplers.create_sampler_with_index(sd_samplers.samplers, self.sampler_index, self.sd_model)
+        decoded_samples = torch.from_numpy(np.array(batch_images))
+        decoded_samples = decoded_samples.to(devices.device)
+        decoded_samples = 2. * decoded_samples - 1.
+
+        samples = self.sdmodel.get_first_stage_encoding(self.sdmodel.encode_first_stage(decoded_samples))
+
+        image_conditioning = self.img2img_image_conditioning(decoded_samples, samples)
+
+        self.sampler = sd_samplers.create_sampler(self.sampler_id, self.sdmodel)
 
         noise = create_random_tensors(samples.shape[1:], seeds=seeds, subseeds=subseeds, subseed_strength=subseed_strength, seed_resize_from_h=self.seed_resize_from_h, seed_resize_from_w=self.seed_resize_from_w, p=self)
 
@@ -200,7 +327,7 @@ class sd_txt(sd_job):
         x = None
         devices.torch_gc()
 
-        samples = self.sampler.sample_img2img(self, samples, noise, conditioning, unconditional_conditioning, steps=self.steps, image_conditioning=self.create_dummy_mask(samples))
+        samples = self.sampler.sample_img2img(self, samples, noise, conditioning, unconditional_conditioning, steps=self.steps, image_conditioning=image_conditioning)
 
         return samples
 
@@ -231,16 +358,16 @@ class sd_img(sd_job):
         self.inpaint_fullres_pad = inpaint_fullres_pad
 
         # State
-        self.mask = None # tensor
-        self.maskm1 = None # tensor (1-mask)
-        self.lmask = None # tensor (latent encoding)
+        self.mask = None  # tensor
+        self.maskm1 = None  # tensor (1-mask)
+        self.lmask = None  # tensor (latent encoding)
         self.condmask = None
-        self.overlay_mask = None # TODO idk what overlay is
+        self.overlay_mask = None  # TODO idk what overlay is
 
     def init(self, model, all_prompts, all_seeds, all_subseeds):
         from src_plugins.sd1111_plugin import sd_samplers
 
-        self.sd_model = model
+        self.sdmodel = model
         self.sampler = sd_samplers.create_sampler(self.sampler_id, model)
 
         crop_region = None
@@ -315,7 +442,7 @@ class sd_img(sd_job):
         image = 2. * image - 1.
         image = image.to(devices.device)
 
-        self.init_latent = self.sd_model.get_first_stage_encoding(self.sd_model.encode_first_stage(image))
+        self.init_latent = self.sdmodel.get_first_stage_encoding(self.sdmodel.encode_first_stage(image))
 
         if self.img_mask is not None:
             init_mask = maskl
@@ -325,8 +452,8 @@ class sd_img(sd_job):
             latmask = np.around(latmask)
             latmask = np.tile(latmask[None], (4, 1, 1))
 
-            self.mask = torch.asarray(1.0 - latmask).to(devices.device).type(self.sd_model.dtype)
-            self.maskm1 = torch.asarray(latmask).to(devices.device).type(self.sd_model.dtype)
+            self.mask = torch.asarray(1.0 - latmask).to(devices.device).type(self.sdmodel.dtype)
+            self.maskm1 = torch.asarray(latmask).to(devices.device).type(self.sdmodel.dtype)
 
             # this needs to be fixed to be done in sample() using actual seeds for batches
             if self.inpaint_fill == 2:
@@ -348,13 +475,13 @@ class sd_img(sd_job):
             # Create another latent image, this time with a masked version of the original input.
             conditioning_mask = conditioning_mask.to(image.device)
             conditioning_image = image * (1.0 - conditioning_mask)
-            conditioning_image = self.sd_model.get_first_stage_encoding(self.sd_model.encode_first_stage(conditioning_image))
+            conditioning_image = self.sdmodel.get_first_stage_encoding(self.sdmodel.encode_first_stage(conditioning_image))
 
             # Create the concatenated conditioning tensor to be fed to `c_concat`
             conditioning_mask = torch.nn.functional.interpolate(conditioning_mask, size=self.init_latent.shape[-2:])
             conditioning_mask = conditioning_mask.expand(conditioning_image.shape[0], -1, -1, -1)
             self.condmask = torch.cat([conditioning_mask, conditioning_image], dim=1)
-            self.condmask = self.condmask.to(devices.device).type(self.sd_model.dtype)
+            self.condmask = self.condmask.to(devices.device).type(self.sdmodel.dtype)
         else:
             self.condmask = torch.zeros(
                     self.init_latent.shape[0], 5, 1, 1,
@@ -375,9 +502,15 @@ class sd_img(sd_job):
         return samples
 
 
+last_p = None
+last_c = None
+last_uc = None
+
+
 def process_images(p: sd_job):
-    p.prompt = plugins.run(prompt_job(p.prompt))
-    p.promptneg = plugins.run(prompt_job(p.promptneg))
+    global last_p, last_c, last_uc
+    p.prompt = plugins.process_prompt(p.prompt)
+    p.promptneg = plugins.process_prompt(p.promptneg)
 
     if type(p.prompt) == list:
         assert (len(p.prompt) > 0)
@@ -430,15 +563,24 @@ def process_images(p: sd_job):
         if len(prompts) == 0:
             return
 
-        with devices.autocast():
-            uc = prompt_parser.get_learned_conditioning(SDState.sdmodel, len(prompts) * [p.promptneg], p.steps)
-            c = prompt_parser.get_multicond_learned_conditioning(SDState.sdmodel, prompts, p.steps)
+        c = None
+        uc = None
+        if last_p == p.prompt:
+            c = last_c
+            uc = last_uc
+        else:
+            with devices.autocast():
+                uc = prompt_parser.get_learned_conditioning(SDState.sdmodel, len(prompts) * [p.promptneg], p.steps)
+                c = prompt_parser.get_multicond_learned_conditioning(SDState.sdmodel, prompts, p.steps)
+                last_p = p.prompt
+                last_c = c
+                last_uc = uc
 
         with devices.autocast():
             samples_ddim = p.sample(conditioning=c, unconditional_conditioning=uc, seeds=seeds, subseeds=subseeds, subseed_strength=p.subseed_strength)
 
-        samples_ddim = samples_ddim.to(devices.dtype_vae)
-        x_samples_ddim = decode_first_stage(SDState.sdmodel, samples_ddim)
+        x_samples_ddim = [decode_first_stage(SDState.sdmodel, samples_ddim[i:i + 1].to(dtype=devices.dtype_vae))[0].cpu() for i in range(samples_ddim.size(0))]
+        x_samples_ddim = torch.stack(x_samples_ddim).float()
         x_samples_ddim = torch.clamp((x_samples_ddim + 1.0) / 2.0, min=0.0, max=1.0)
 
         del samples_ddim

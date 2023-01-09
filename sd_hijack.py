@@ -7,7 +7,7 @@ import torch
 import src_plugins.sd1111_plugin.__conf__
 import src_plugins.sd1111_plugin.__conf__
 from src_plugins.sd1111_plugin.sd_hijack_optimizations import invokeAI_mps_available
-from src_plugins.sd1111_plugin import __conf__, prompt_parser, sd_hijack_optimizations, sd_paths
+from src_plugins.sd1111_plugin import __conf__, prompt_parser, sd_hijack_checkpoint, sd_hijack_clip, sd_hijack_openclip, sd_hijack_optimizations, sd_paths
 from src_core.lib import devices
 from src_plugins.sd1111_plugin.options import opts
 from src_plugins.sd1111_plugin.SDAttention import SDAttention
@@ -16,31 +16,6 @@ attention_CrossAttention_forward = ldm.modules.attention.CrossAttention.forward
 diffusionmodules_model_nonlinearity = ldm.modules.diffusionmodules.model.nonlinearity
 diffusionmodules_model_AttnBlock_forward = ldm.modules.diffusionmodules.model.AttnBlock.forward
 
-
-# def apply_optimizations():
-#     undo_optimizations()
-#
-#     ldm.modules.diffusionmodules.model.nonlinearity = silu
-#
-#     if SDPlugin.force_enable_xformers or (SDPlugin.xformers and SDPlugin.xformers_available and torch.version.cuda and (6, 0) <= torch.cuda.get_device_capability(devices.device) <= (9, 0)):
-#         print("Applying xformers cross attention optimization.")
-#         ldm.modules.attention.CrossAttention.forward = sd_hijack_optimizations.xformers_attention_forward
-#         ldm.modules.diffusionmodules.model.AttnBlock.forward = sd_hijack_optimizations.xformers_attnblock_forward
-#     elif SDPlugin.opt_split_attention_v1:
-#         print("Applying v1 cross attention optimization.")
-#         ldm.modules.attention.CrossAttention.forward = sd_hijack_optimizations.split_cross_attention_forward_v1
-#     elif not SDPlugin.disable_opt_split_attention and (SDPlugin.opt_split_attention_invokeai or not torch.cuda.is_available()):
-#         if not invokeAI_mps_available and devices.device.type == 'mps':
-#             print("The InvokeAI cross attention optimization for MPS requires the psutil package which is not installed.")
-#             print("Applying v1 cross attention optimization.")
-#             ldm.modules.attention.CrossAttention.forward = sd_hijack_optimizations.split_cross_attention_forward_v1
-#         else:
-#             print("Applying cross attention optimization (InvokeAI).")
-#             ldm.modules.attention.CrossAttention.forward = sd_hijack_optimizations.split_cross_attention_forward_invokeAI
-#     elif not SDPlugin.disable_opt_split_attention and (SDPlugin.opt_split_attention or torch.cuda.is_available()):
-#         print("Applying cross attention optimization (Doggettx).")
-#         ldm.modules.attention.CrossAttention.forward = sd_hijack_optimizations.split_cross_attention_forward()
-#         ldm.modules.diffusionmodules.model.AttnBlock.forward = sd_hijack_optimizations.cross_attention_attnblock_forward
 
 def apply_optimizations():
     ldm.modules.diffusionmodules.model.nonlinearity = torch.nn.functional.silu
@@ -75,6 +50,9 @@ def apply_optimizations():
         print("Applying cross attention optimization (Doggettx)")
         ldm.modules.attention.CrossAttention.forward = sd_hijack_optimizations.split_cross_attention_forward()
         ldm.modules.diffusionmodules.model.AttnBlock.forward = sd_hijack_optimizations.cross_attention_attnblock_forward
+    elif mode == SDAttention.SUBQUAD:
+        ldm.modules.attention.CrossAttention.forward = sd_hijack_optimizations.sub_quad_attention_forward
+        ldm.modules.diffusionmodules.model.AttnBlock.forward = sd_hijack_optimizations.sub_quad_attnblock_forward
 
 
 def undo_optimizations():
@@ -82,6 +60,12 @@ def undo_optimizations():
     ldm.modules.attention.CrossAttention.forward = sd_hypernetwork.attention_CrossAttention_forward
     ldm.modules.diffusionmodules.model.nonlinearity = diffusionmodules_model_nonlinearity
     ldm.modules.diffusionmodules.model.AttnBlock.forward = diffusionmodules_model_AttnBlock_forward
+
+
+def fix_checkpoint():
+    ldm.modules.attention.BasicTransformerBlock.forward = sd_hijack_checkpoint.BasicTransformerBlock_forward
+    ldm.modules.diffusionmodules.openaimodel.ResBlock.forward = sd_hijack_checkpoint.ResBlock_forward
+    ldm.modules.diffusionmodules.openaimodel.AttentionBlock.forward = sd_hijack_checkpoint.AttentionBlock_forward
 
 
 def get_target_prompt_token_count(token_count):
@@ -100,14 +84,18 @@ class StableDiffusionModelHijack:
         self.embedding_db = sd_textinv.EmbeddingDatabase(sd_paths.res("embeddings"))
 
     def hijack(self, m):
-        model_embeddings = m.cond_stage_model.transformer.text_model.embeddings
-
-        model_embeddings.token_embedding = EmbeddingsWithFixes(model_embeddings.token_embedding, self)
-        m.cond_stage_model = FrozenCLIPEmbedderWithCustomWords(m.cond_stage_model, self)
+        if type(m.cond_stage_model) == ldm.modules.encoders.modules.FrozenCLIPEmbedder:
+            model_embeddings = m.cond_stage_model.transformer.text_model.embeddings
+            model_embeddings.token_embedding = EmbeddingsWithFixes(model_embeddings.token_embedding, self)
+            m.cond_stage_model = sd_hijack_clip.FrozenCLIPEmbedderWithCustomWords(m.cond_stage_model, self)
+        elif type(m.cond_stage_model) == ldm.modules.encoders.modules.FrozenOpenCLIPEmbedder:
+            m.cond_stage_model.model.token_embedding = EmbeddingsWithFixes(m.cond_stage_model.model.token_embedding, self)
+            m.cond_stage_model = sd_hijack_openclip.FrozenOpenCLIPEmbedderWithCustomWords(m.cond_stage_model, self)
 
         self.clip = m.cond_stage_model
 
         apply_optimizations()
+        fix_checkpoint()
 
         def flatten(el):
             flattened = [flatten(children) for children in el.children()]
@@ -436,5 +424,6 @@ def add_circular_option_to_conv_2d():
 def init():
     global model_hijack
     model_hijack = StableDiffusionModelHijack()
+
 
 model_hijack = None

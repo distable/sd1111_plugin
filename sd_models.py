@@ -7,6 +7,7 @@ from pathlib import Path
 import torch
 from omegaconf import OmegaConf
 
+from src_core import plugins
 from . import __conf__
 from src_plugins.sd1111_plugin.sd_hijack_inpainting import do_inpainting_hijack, should_hijack_inpainting
 from src_core.lib import devices, modellib
@@ -32,14 +33,15 @@ def checkpoint_titles():
 
 def discover_sdmodels():
     g_infos.clear()
-    all_paths = modellib.discover_models(model_dir=sd_paths.res(),
-                                         command_path=sd_paths.res(),
+    all_paths = modellib.discover_models(model_dir=plugins.get_plug('sd1111').res(),
+                                         command_path=plugins.get_plug('sd1111').res(),
                                          ext_filter=[".ckpt"])
 
     def modeltitle(path, shorthash):
         return f'{Path(path).name} [{shorthash}]', Path(path).with_suffix("").name
 
-    cmd_ckpt = sd_paths.default_ckpt
+
+    cmd_ckpt = plugins.get_plug('sd1111').res(__conf__.res_ckpt)
     if os.path.exists(cmd_ckpt):
         h = get_model_hash(cmd_ckpt)
         title, short_model_name = modeltitle(cmd_ckpt, h)
@@ -152,9 +154,8 @@ def load_model_weights(model, info):
         devices.dtype_vae = torch.float32 if __conf__.no_half or __conf__.no_half_vae else torch.float16
 
         vae_file = os.path.splitext(path)[0] + ".vae.pt"
-
-        if not os.path.exists(vae_file) and sd_paths.vae_path is not None:
-            vae_file = sd_paths.vae_path
+        if not os.path.exists(vae_file):
+            vae_file = plugins.get_plug('sd1111').res(__conf__.res_vae)
 
         if os.path.exists(vae_file):
             print(f"{vae_file}")
