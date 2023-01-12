@@ -1,6 +1,5 @@
 import json
 import sys
-import gradio as gr
 
 class Options:
     data = None
