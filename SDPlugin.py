@@ -226,6 +226,8 @@ class SDPlugin(Plugin):
             return self.txt2img(self, txt)
 
         if j.init_images is None:
+            from src_core.classes.convert import save_png
+            save_png(j.ctx.image, j.session.current_frame_path('img2img'), with_async=True)
             j.init_images = [j.ctx.image]
 
         ret = sd_job.process_images(j)

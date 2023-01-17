@@ -90,8 +90,9 @@ def get_checkpoint(path=None):
 
     if len(g_infos) == 0:
         printerr(f"No checkpoints found. When searching for checkpoints, looked at:")
-        if sd_paths.ckpt is not None:
-            printerr(f" - file {os.path.abspath(sd_paths.ckpt)}")
+        ckpt = plugins.get_plug('sd1111').res(__conf__.res_ckpt)
+        if ckpt is not None:
+            printerr(f" - file {os.path.abspath(ckpt)}")
         printerr(f" - directory {sd_paths.res()}")
 
         printerr(f"Can't run without a checkpoint. Find and place a .ckpt file into any of those locations. The program will exit.")
