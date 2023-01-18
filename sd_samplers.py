@@ -294,6 +294,35 @@ class CFGDenoiser(torch.nn.Module):
         return denoised
 
 
+def spherical_dist_loss(x, y):
+    import k_diffusion as K
+    from torch.nn import functional as F
+
+    x = F.normalize(x, dim=-1)
+    y = F.normalize(y, dim=-1)
+    return (x - y).norm(dim=-1).div(2).arcsin().pow(2).mul(2)
+
+
+def make_cond_model_fn(model, cond_fn):
+    import k_diffusion as K
+    def model_fn(x, sigma, **kwargs):
+        with torch.enable_grad():
+            x = x.detach().requires_grad_()
+            denoised = model(x, sigma, **kwargs)
+            cond_grad = cond_fn(x, sigma, denoised=denoised, **kwargs).detach()
+            cond_denoised = denoised.detach() + cond_grad * K.utils.append_dims(sigma ** 2, x.ndim)
+        return cond_denoised
+
+    return model_fn
+
+
+def make_static_thresh_model_fn(model, value=1.):
+    def model_fn(x, sigma, **kwargs):
+        return model(x, sigma, **kwargs).clamp(-value, value)
+
+    return model_fn
+
+
 class TorchHijack:
     def __init__(self, kdiff_sampler):
         self.kdiff_sampler = kdiff_sampler
@@ -316,11 +345,17 @@ class KDiffusionSampler:
     }
 
     def __init__(self, funcname, sd_model, quantize=False):
+        def cond_fn(x, t, denoised):
+            return 0
+
+
         self.model_wrap = k_diffusion.external.CompVisDenoiser(sd_model, quantize=quantize)
         self.funcname = funcname
         self.func = getattr(k_diffusion.sampling, self.funcname)
         self.extra_params = self.sampler_extra_params.get(funcname, [])
         self.model_wrap_cfg = CFGDenoiser(self.model_wrap)
+        self.model_wrap_all = make_cond_model_fn(self.model_wrap_cfg, cond_fn)
+        self.model_wrap_all = make_static_thresh_model_fn(self.model_wrap_all)
         self.sampler_noises = None
         self.sampler_noise_index = 0
         self.stop_at = None
@@ -414,7 +449,7 @@ class KDiffusionSampler:
         self.model_wrap_cfg.init_latent = x
         self.last_latent = x
 
-        samples = self.launch_sampling(steps, lambda: self.func(self.model_wrap_cfg, xi, extra_args={
+        samples = self.launch_sampling(steps, lambda: self.func(self.model_wrap_all, xi, extra_args={
             'cond'      : conditioning,
             'image_cond': image_conditioning,
             'uncond'    : unconditional_conditioning,
@@ -445,7 +480,7 @@ class KDiffusionSampler:
             extra_params_kwargs['sigmas'] = sigmas
 
         self.last_latent = x
-        samples = self.launch_sampling(steps, lambda: self.func(self.model_wrap_cfg, x, extra_args={
+        samples = self.launch_sampling(steps, lambda: self.func(self.model_wrap_all, x, extra_args={
             'cond'      : conditioning,
             'image_cond': image_conditioning,
             'uncond'    : unconditional_conditioning,
