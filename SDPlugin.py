@@ -218,17 +218,16 @@ class SDPlugin(Plugin):
 
     @plugjob(key='sd_job')
     def img2img(self, j: sd_img):
-        if j.ctx.image is None:
+        if j.session.image is None:
             txt = sd_txt(**to_dict(j))
-            txt.ctx = j.ctx
             txt.job = j.job
             txt.session = j.session
             return self.txt2img(self, txt)
 
         if j.init_images is None:
             from src_core.classes.convert import save_png
-            save_png(j.ctx.image, j.session.current_frame_path('img2img'), with_async=True)
-            j.init_images = [j.ctx.image]
+            save_png(j.session.image, j.session.determine_current_frame_path('img2img'), with_async=True)
+            j.init_images = [j.session.image]
 
         ret = sd_job.process_images(j)
 

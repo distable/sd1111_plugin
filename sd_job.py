@@ -92,11 +92,11 @@ class sd_job(prompt_job):
 
     @property
     def width(self):
-        return self.ctx.width or self.w
+        return self.width or self.w
 
     @property
     def height(self):
-        return self.ctx.height or self.h
+        return self.height or self.h
 
     def init(self, model, all_prompts, all_seeds, all_subseeds):
         pass
@@ -200,6 +200,7 @@ class sd_txt(sd_job):
         self.h1 = h1  # First phase height
         self.truncate_x = 0
         self.truncate_y = 0
+        self.dev = False
 
     def init(self, model, all_prompts, all_seeds, all_subseeds):
         from src_plugins.sd1111_plugin import sd_samplers
@@ -345,6 +346,8 @@ class sd_img(sd_job):
                  inpaint_fullres_pad: int = 0,
                  **kwargs):
         super().__init__(**kwargs)
+
+        dev = False
 
         self.init_images = image
         self.init_latent = None

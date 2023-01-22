@@ -345,7 +345,7 @@ class KDiffusionSampler:
     }
 
     def __init__(self, funcname, sd_model, quantize=False):
-        def cond_fn(x, t, denoised):
+        def cond_fn(x, t, denoised, **kwargs):
             return 0
 
 
@@ -354,8 +354,8 @@ class KDiffusionSampler:
         self.func = getattr(k_diffusion.sampling, self.funcname)
         self.extra_params = self.sampler_extra_params.get(funcname, [])
         self.model_wrap_cfg = CFGDenoiser(self.model_wrap)
-        self.model_wrap_all = make_cond_model_fn(self.model_wrap_cfg, cond_fn)
-        self.model_wrap_all = make_static_thresh_model_fn(self.model_wrap_all)
+        # self.model_wrap_all = make_cond_model_fn(self.model_wrap_cfg, cond_fn)
+        # self.model_wrap_all = make_static_thresh_model_fn(self.model_wrap_cfg)
         self.sampler_noises = None
         self.sampler_noise_index = 0
         self.stop_at = None
@@ -449,7 +449,7 @@ class KDiffusionSampler:
         self.model_wrap_cfg.init_latent = x
         self.last_latent = x
 
-        samples = self.launch_sampling(steps, lambda: self.func(self.model_wrap_all, xi, extra_args={
+        samples = self.launch_sampling(steps, lambda: self.func(self.model_wrap_cfg, xi, extra_args={
             'cond'      : conditioning,
             'image_cond': image_conditioning,
             'uncond'    : unconditional_conditioning,
@@ -480,7 +480,7 @@ class KDiffusionSampler:
             extra_params_kwargs['sigmas'] = sigmas
 
         self.last_latent = x
-        samples = self.launch_sampling(steps, lambda: self.func(self.model_wrap_all, x, extra_args={
+        samples = self.launch_sampling(steps, lambda: self.func(self.model_wrap_cfg, x, extra_args={
             'cond'      : conditioning,
             'image_cond': image_conditioning,
             'uncond'    : unconditional_conditioning,
