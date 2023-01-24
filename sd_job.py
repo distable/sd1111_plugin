@@ -92,11 +92,11 @@ class sd_job(prompt_job):
 
     @property
     def width(self):
-        return self.width or self.w
+        return self.session.width or self.w
 
     @property
     def height(self):
-        return self.height or self.h
+        return self.session.height or self.h
 
     def init(self, model, all_prompts, all_seeds, all_subseeds):
         pass
