@@ -368,6 +368,7 @@ class KDiffusionSampler:
     def callback_state(self, d):
         step = d['i']
         latent = d["denoised"]
+        # print(d)
         store_latent(latent)
         self.last_latent = latent
 
@@ -420,11 +421,11 @@ class KDiffusionSampler:
 
         return extra_params_kwargs
 
-    def sample_img2img(self, p, x, noise, conditioning, unconditional_conditioning, steps=None, image_conditioning=None):
-        steps, t_enc = setup_img2img_steps(p, steps)
+    def sample_img2img(self, job, x, noise, conditioning, unconditional_conditioning, steps=None, image_conditioning=None):
+        steps, t_enc = setup_img2img_steps(job, steps)
 
-        if p.sampler_noise_scheduler_override:
-            sigmas = p.sampler_noise_scheduler_override(steps)
+        if job.sampler_noise_scheduler_override:
+            sigmas = job.sampler_noise_scheduler_override(steps)
         elif self.config is not None and self.config.options.get_plug('scheduler', None) == 'karras':
             sigmas = k_diffusion.sampling.get_sigmas_karras(n=steps, sigma_min=0.1, sigma_max=10, device=devices.device)
         else:
@@ -433,7 +434,7 @@ class KDiffusionSampler:
         sigma_sched = sigmas[steps - t_enc - 1:]
         xi = x + noise * sigma_sched[0]
 
-        extra_params_kwargs = self.initialize(p)
+        extra_params_kwargs = self.initialize(job)
         if 'sigma_min' in inspect.signature(self.func).parameters:
             ## last sigma is zero which isn't allowed by DPM Fast & Adaptive so taking value before last
             extra_params_kwargs['sigma_min'] = sigma_sched[-2]
@@ -449,12 +450,17 @@ class KDiffusionSampler:
         self.model_wrap_cfg.init_latent = x
         self.last_latent = x
 
+        job.job.update_max(steps)
+        def callback(d):
+            job.job.update_step(d.get('i', 0))
+            self.callback_state(d)
+
         samples = self.launch_sampling(steps, lambda: self.func(self.model_wrap_cfg, xi, extra_args={
             'cond'      : conditioning,
             'image_cond': image_conditioning,
             'uncond'    : unconditional_conditioning,
-            'cond_scale': p.cfg
-        }, disable=False, callback=self.callback_state, **extra_params_kwargs))
+            'cond_scale': job.cfg
+        }, disable=False, callback=callback, **extra_params_kwargs))
 
         return samples
 

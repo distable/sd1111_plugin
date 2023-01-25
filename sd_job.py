@@ -510,40 +510,40 @@ last_c = None
 last_uc = None
 
 
-def process_images(p: sd_job):
+def process_images(j: sd_job):
     global last_p, last_c, last_uc
-    p.prompt = plugins.process_prompt(p.prompt)
-    p.promptneg = plugins.process_prompt(p.promptneg)
+    j.prompt = plugins.process_prompt(j.prompt)
+    j.promptneg = plugins.process_prompt(j.promptneg)
 
-    if type(p.prompt) == list:
-        assert (len(p.prompt) > 0)
+    if type(j.prompt) == list:
+        assert (len(j.prompt) > 0)
     else:
-        assert p.prompt is not None
+        assert j.prompt is not None
 
     devices.torch_gc()
 
-    seed = get_fixed_seed(p.seed)
-    subseed = get_fixed_seed(p.subseed)
+    seed = get_fixed_seed(j.seed)
+    subseed = get_fixed_seed(j.subseed)
 
-    sd_hijack.model_hijack.apply_circular(p.tiling)
+    sd_hijack.model_hijack.apply_circular(j.tiling)
     sd_hijack.model_hijack.clear_comments()
 
     # SDPlugin.prompt_styles.apply_styles(p)
 
-    if type(p.prompt) == list:
-        p.all_prompts = p.prompt
+    if type(j.prompt) == list:
+        j.all_prompts = j.prompt
     else:
-        p.all_prompts = p.batch_size * [p.prompt]
+        j.all_prompts = j.batch_size * [j.prompt]
 
     if type(seed) == list:
-        p.all_seeds = seed
+        j.all_seeds = seed
     else:
-        p.all_seeds = [int(seed) + (x if p.subseed_strength == 0 else 0) for x in range(len(p.all_prompts))]
+        j.all_seeds = [int(seed) + (x if j.subseed_strength == 0 else 0) for x in range(len(j.all_prompts))]
 
     if type(subseed) == list:
-        p.all_subseeds = subseed
+        j.all_subseeds = subseed
     else:
-        p.all_subseeds = [int(subseed) + x for x in range(len(p.all_prompts))]
+        j.all_subseeds = [int(subseed) + x for x in range(len(j.all_prompts))]
 
     # if os.path.exists(SDPlugin.embeddings_dir) and not p.do_not_reload_embeddings:
     #     modules.stable_diffusion_auto2222.sd_hijack.model_hijack.embedding_db.load_textual_inversion_embeddings()
@@ -552,35 +552,35 @@ def process_images(p: sd_job):
 
     with torch.no_grad(), SDState.sdmodel.ema_scope():
         with devices.autocast():
-            p.init(SDState.sdmodel, p.all_prompts, p.all_seeds, p.all_subseeds)
+            j.init(SDState.sdmodel, j.all_prompts, j.all_seeds, j.all_subseeds)
 
         # if state.skipped:
         #     state.skipped = False
         # if state.interrupted:
         #     break
 
-        prompts = p.all_prompts
-        seeds = p.all_seeds
-        subseeds = p.all_subseeds
+        prompts = j.all_prompts
+        seeds = j.all_seeds
+        subseeds = j.all_subseeds
 
         if len(prompts) == 0:
             return
 
         c = None
         uc = None
-        if last_p == p.prompt:
+        if last_p == j.prompt:
             c = last_c
             uc = last_uc
         else:
             with devices.autocast():
-                uc = prompt_parser.get_learned_conditioning(SDState.sdmodel, len(prompts) * [p.promptneg], p.steps)
-                c = prompt_parser.get_multicond_learned_conditioning(SDState.sdmodel, prompts, p.steps)
-                last_p = p.prompt
+                uc = prompt_parser.get_learned_conditioning(SDState.sdmodel, len(prompts) * [j.promptneg], j.steps)
+                c = prompt_parser.get_multicond_learned_conditioning(SDState.sdmodel, prompts, j.steps)
+                last_p = j.prompt
                 last_c = c
                 last_uc = uc
 
         with devices.autocast():
-            samples_ddim = p.sample(conditioning=c, unconditional_conditioning=uc, seeds=seeds, subseeds=subseeds, subseed_strength=p.subseed_strength)
+            samples_ddim = j.sample(conditioning=c, unconditional_conditioning=uc, seeds=seeds, subseeds=subseeds, subseed_strength=j.subseed_strength)
 
         x_samples_ddim = [decode_first_stage(SDState.sdmodel, samples_ddim[i:i + 1].to(dtype=devices.dtype_vae))[0].cpu() for i in range(samples_ddim.size(0))]
         x_samples_ddim = torch.stack(x_samples_ddim).float()
