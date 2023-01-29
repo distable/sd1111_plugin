@@ -601,12 +601,12 @@ def process_images(j: sd_job):
             x_sample = 255. * np.moveaxis(x_sample.cpu().numpy(), 0, 2)
             x_sample = x_sample.astype(np.uint8)
 
-            image = Image.fromarray(x_sample)
+            # image = Image.fromarray(x_sample)
 
             # if opts.samples_save and not p.do_not_save_samples:
             #     images.save_image(image, p.outpath_samples, "", seeds[i], prompts[i], opts.samples_format, metadata=infotext(n, i), p=p)
 
-            ret.append(image)
+            ret.append(x_sample)
 
         del x_samples_ddim
 

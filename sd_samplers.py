@@ -450,7 +450,7 @@ class KDiffusionSampler:
         self.model_wrap_cfg.init_latent = x
         self.last_latent = x
 
-        job.job.update_max(steps)
+        job.job.update_max(t_enc+1)
         def callback(d):
             job.job.update_step(d.get('i', 0))
             self.callback_state(d)
