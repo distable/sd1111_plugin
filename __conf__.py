@@ -4,8 +4,8 @@ from src_plugins.sd1111_plugin.SDAttention import SDAttention
 res_ckpt = 'sd-v1-5.ckpt'
 res_vae = "vae.vae.pt"
 
-# attention = SDAttention.SPLIT_DOGGETT
-attention = SDAttention.SUBQUAD
+attention = SDAttention.SPLIT_DOGGETT
+# attention = SDAttention.SUBQUAD
 lowvram = True
 medvram = True
 lowram = False
