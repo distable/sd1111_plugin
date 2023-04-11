@@ -203,6 +203,9 @@ def load_sdmodel(info=None):
     sdmodel = instantiate_from_config(config.model)
     load_model_weights(sdmodel, info)
 
+    # import tomesd
+    # tomesd.apply_patch(sdmodel, ratio=0.5)
+
     if __conf__.lowvram or __conf__.medvram:
         modelsplit.setup_for_low_vram(sdmodel, __conf__.medvram)
     else:
