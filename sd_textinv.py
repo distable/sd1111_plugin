@@ -9,15 +9,15 @@ import csv
 
 from PIL import Image, PngImagePlugin
 
-import src_plugins.sd1111_plugin.options
-import src_plugins.sd1111_plugin.sd_paths
-import src_plugins.sd1111_plugin.SDState
-from src_plugins.sd1111_plugin import sd_hijack, sd_models
+import src_plugins.sd1111.options
+import src_plugins.sd1111.sd_paths
+import src_plugins.sd1111.SDState
+from src_plugins.sd1111 import sd_hijack, sd_models
 from src_core.lib import devices
-import src_plugins.sd1111_plugin.sd_textinv_dataset
-from src_plugins.sd1111_plugin.sd_job import process_images, sd_txt
-from src_plugins.sd1111_plugin.sd_textinv_learn_schedule import LearnRateScheduler
-from src_plugins.sd1111_plugin.image_embedding import (embedding_to_b64, embedding_from_b64,
+import src_plugins.sd1111.sd_textinv_dataset
+from src_plugins.sd1111.sd_job import process_images, sd_txt
+from src_plugins.sd1111.sd_textinv_learn_schedule import LearnRateScheduler
+from src_plugins.sd1111.image_embedding import (embedding_to_b64, embedding_from_b64,
                                                        insert_image_data_embed, extract_image_data_embed,
                                                        caption_image_overlay)
 
@@ -98,10 +98,10 @@ class EmbeddingDatabase:
                 embed_image = Image.open(path)
                 if hasattr(embed_image, 'text') and 'sd-ti-embedding' in embed_image.text:
                     data = embedding_from_b64(embed_image.text['sd-ti-embedding'])
-                    name = data.get_plug('name', name)
+                    name = data.get('name', name)
                 else:
                     data = extract_image_data_embed(embed_image)
-                    name = data.get_plug('name', name)
+                    name = data.get('name', name)
             else:
                 data = torch.load(path, map_location="cpu")
 
@@ -124,10 +124,10 @@ class EmbeddingDatabase:
 
             vec = emb.detach().to(devices.device, dtype=torch.float32)
             embedding = Embedding(vec, name)
-            embedding.step = data.get_plug('step', None)
-            embedding.sd_checkpoint = data.get_plug('hash', None)
-            embedding.sd_checkpoint_name = data.get_plug('sd_checkpoint_name', None)
-            self.register_embedding(embedding, src_plugins.sd1111_plugin.SDState.sdmodel)
+            embedding.step = data.get('step', None)
+            embedding.sd_checkpoint = data.get('hash', None)
+            embedding.sd_checkpoint_name = data.get('sd_checkpoint_name', None)
+            self.register_embedding(embedding, src_plugins.sd1111.SDState.sdmodel)
 
         for fn in os.listdir(self.embeddings_dir):
             try:
@@ -160,7 +160,7 @@ class EmbeddingDatabase:
 
 
 def create_embedding(name, num_vectors_per_token, overwrite_old, init_text='*'):
-    cond_model = src_plugins.sd1111_plugin.SDState.sdmodel.cond_stage_model
+    cond_model = src_plugins.sd1111.SDState.sdmodel.cond_stage_model
     embedding_layer = cond_model.wrapped.transformer.text_model.embeddings
 
     ids = cond_model.tokenizer(init_text, max_length=num_vectors_per_token, return_tensors="pt", add_special_tokens=False)["input_ids"]
@@ -182,10 +182,10 @@ def create_embedding(name, num_vectors_per_token, overwrite_old, init_text='*'):
 
 
 def write_loss(log_directory, filename, step, epoch_len, values):
-    if src_plugins.sd1111_plugin.options.opts.training_write_csv_every == 0:
+    if src_plugins.sd1111.options.opts.training_write_csv_every == 0:
         return
 
-    if step % src_plugins.sd1111_plugin.options.opts.training_write_csv_every != 0:
+    if step % src_plugins.sd1111.options.opts.training_write_csv_every != 0:
         return
 
     write_csv_header = False if os.path.exists(os.path.join(log_directory, filename)) else True
@@ -235,11 +235,11 @@ def train_embedding(embedding_name, learn_rate, batch_size, data_root, log_direc
     else:
         images_embeds_dir = None
 
-    cond_model = src_plugins.sd1111_plugin.SDState.sdmodel.cond_stage_model
+    cond_model = src_plugins.sd1111.SDState.sdmodel.cond_stage_model
 
     # SDPlugin.state.textinfo = f"Preparing dataset from {html.escape(data_root)}..."
     with torch.autocast("cuda"):
-        ds = src_plugins.textual_inversion.dataset.PersonalizedBase(data_root=data_root, width=training_width, height=training_height, repeats=src_plugins.sd1111_plugin.options.opts.training_image_repeats_per_epoch, placeholder_token=embedding_name, model=src_plugins.sd1111_plugin.SDState.sdmodel, device=devices.device, template_file=template_file, batch_size=batch_size)
+        ds = src_plugins.textual_inversion.dataset.PersonalizedBase(data_root=data_root, width=training_width, height=training_height, repeats=src_plugins.sd1111.options.opts.training_image_repeats_per_epoch, placeholder_token=embedding_name, model=src_plugins.sd1111.SDState.sdmodel, device=devices.device, template_file=template_file, batch_size=batch_size)
 
     hijack = sd_hijack.model_hijack
 
@@ -273,7 +273,7 @@ def train_embedding(embedding_name, learn_rate, batch_size, data_root, log_direc
         with torch.autocast("cuda"):
             c = cond_model([entry.cond_text for entry in entries])
             x = torch.stack([entry.latent for entry in entries]).to(devices.device)
-            loss = src_plugins.sd1111_plugin.SDState.sdmodel(x, c)[0]
+            loss = src_plugins.sd1111.SDState.sdmodel(x, c)[0]
             del x
 
             losses[embedding.progress_i % losses.shape[0]] = loss.item()
@@ -301,9 +301,9 @@ def train_embedding(embedding_name, learn_rate, batch_size, data_root, log_direc
         if embedding.progress_i > 0 and images_dir is not None and embedding.progress_i % create_image_every == 0:
             last_saved_image = os.path.join(images_dir, f'{embedding_name}-{embedding.progress_i}.png')
 
-            from src_plugins.sd1111_plugin import sd_job
+            from src_plugins.sd1111 import sd_job
             p = sd_txt(
-                sd_model=src_plugins.sd1111_plugin.SDState.sdmodel,
+                sd_model=src_plugins.sd1111.SDState.sdmodel,
                 do_not_save_grid=True,
                 do_not_save_samples=True,
                 do_not_reload_embeddings=True,
@@ -339,7 +339,7 @@ def train_embedding(embedding_name, learn_rate, batch_size, data_root, log_direc
                 data = torch.load(last_saved_file)
                 info.add_text("sd-ti-embedding", embedding_to_b64(data))
 
-                title = "<{}>".format(data.get_plug('name', '???'))
+                title = "<{}>".format(data.get('name', '???'))
 
                 try:
                     vectorSize = list(data['string_to_param'].values())[0].shape[0]

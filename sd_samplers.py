@@ -9,12 +9,12 @@ import torch
 from PIL import Image
 
 import src_plugins
-import src_plugins.sd1111_plugin.__conf__
-import src_plugins.sd1111_plugin.__conf__
-import src_plugins.sd1111_plugin.SDState
-from src_plugins.sd1111_plugin import prompt_parser, sd_paths
+import src_plugins.sd1111.__conf__
+import src_plugins.sd1111.__conf__
+import src_plugins.sd1111.SDState
+from src_plugins.sd1111 import prompt_parser, sd_paths
 from src_core.lib import devices
-from src_plugins.sd1111_plugin.sd_job import decode_first_stage, store_latent
+from src_plugins.sd1111.sd_job import decode_first_stage, store_latent
 
 SamplerData = namedtuple('SamplerData', ['name', 'constructor', 'aliases', 'options'])
 
@@ -70,7 +70,7 @@ def setup_img2img_steps(p, steps=None, fixed_steps=False):
 
 
 def single_sample_to_image(sample):
-    x_sample = decode_first_stage(src_plugins.sd1111_plugin.SDState.sdmodel, sample.unsqueeze(0))[0]
+    x_sample = decode_first_stage(src_plugins.sd1111.SDState.sdmodel, sample.unsqueeze(0))[0]
     x_sample = torch.clamp((x_sample + 1.0) / 2.0, min=0.0, max=1.0)
     x_sample = 255. * np.moveaxis(x_sample.cpu().numpy(), 0, 2)
     x_sample = x_sample.astype(np.uint8)
@@ -261,7 +261,7 @@ class CFGDenoiser(torch.nn.Module):
         if tensor.shape[1] == uncond.shape[1]:
             cond_in = torch.cat([tensor, uncond])
 
-            if src_plugins.sd1111_plugin.__conf__.batch_cond_uncond:
+            if src_plugins.sd1111.__conf__.batch_cond_uncond:
                 x_out = self.inner_model(x_in, sigma_in, cond={"c_crossattn": [cond_in], "c_concat": [image_cond_in]})
             else:
                 x_out = torch.zeros_like(x_in)
@@ -271,7 +271,7 @@ class CFGDenoiser(torch.nn.Module):
                     x_out[a:b] = self.inner_model(x_in[a:b], sigma_in[a:b], cond={"c_crossattn": [cond_in[a:b]], "c_concat": [image_cond_in[a:b]]})
         else:
             x_out = torch.zeros_like(x_in)
-            batch_size = batch_size * 2 if src_plugins.sd1111_plugin.__conf__.batch_cond_uncond else batch_size
+            batch_size = batch_size * 2 if src_plugins.sd1111.__conf__.batch_cond_uncond else batch_size
             for batch_offset in range(0, tensor.shape[0], batch_size):
                 a = batch_offset
                 b = min(a + batch_size, tensor.shape[0])
@@ -426,7 +426,7 @@ class KDiffusionSampler:
 
         if job.sampler_noise_scheduler_override:
             sigmas = job.sampler_noise_scheduler_override(steps)
-        elif self.config is not None and self.config.options.get_plug('scheduler', None) == 'karras':
+        elif self.config is not None and self.config.options.get('scheduler', None) == 'karras':
             sigmas = k_diffusion.sampling.get_sigmas_karras(n=steps, sigma_min=0.1, sigma_max=10, device=devices.device)
         else:
             sigmas = self.model_wrap.get_sigmas(steps)
@@ -469,7 +469,7 @@ class KDiffusionSampler:
 
         if p.sampler_noise_scheduler_override:
             sigmas = p.sampler_noise_scheduler_override(steps)
-        elif self.config is not None and self.config.options.get_plug('scheduler', None) == 'karras':
+        elif self.config is not None and self.config.options.get('scheduler', None) == 'karras':
             sigmas = k_diffusion.sampling.get_sigmas_karras(n=steps, sigma_min=0.1, sigma_max=10, device=devices.device)
         else:
             sigmas = self.model_wrap.get_sigmas(steps)

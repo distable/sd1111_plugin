@@ -6,9 +6,9 @@ from einops import rearrange
 from ldm.util import default
 from torch import einsum
 
-import src_plugins.sd1111_plugin.SDState
-from src_plugins.sd1111_plugin import sd_hypernetwork
-from src_plugins.sd1111_plugin.sub_quadratic_attention import efficient_dot_product_attention
+import src_plugins.sd1111.SDState
+from src_plugins.sd1111 import sd_hypernetwork
+from src_plugins.sd1111.sub_quadratic_attention import efficient_dot_product_attention
 
 
 # see https://github.com/basujindal/stable-diffusion/pull/117 for discussion
@@ -325,7 +325,7 @@ def xformers_attnblock_forward(self, x):
 # Based on Birch-san's modified implementation of sub-quadratic attention from https://github.com/Birch-san/diffusers/pull/1
 def sub_quad_attention_forward(self, x, context=None, mask=None):
     assert mask is None, "attention-mask not currently implemented for SubQuadraticCrossAttnProcessor."
-    from src_plugins.sd1111_plugin import __conf__
+    from src_plugins.sd1111 import __conf__
 
     h = self.heads
 

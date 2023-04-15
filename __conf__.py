@@ -1,4 +1,4 @@
-from src_plugins.sd1111_plugin.SDAttention import SDAttention
+from src_plugins.sd1111.SDAttention import SDAttention
 
 # Paths
 res_ckpt = 'sd-v1-5.ckpt'

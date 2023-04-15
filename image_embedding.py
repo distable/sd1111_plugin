@@ -5,7 +5,7 @@ import zlib
 from PIL import Image, PngImagePlugin, ImageDraw, ImageFont
 # from fonts.ttf import Roboto
 import torch
-from src_plugins.sd1111_plugin.options import opts
+from src_plugins.sd1111.options import opts
 
 
 class EmbeddingEncoder(json.JSONEncoder):

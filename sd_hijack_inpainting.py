@@ -30,7 +30,7 @@ from ldm.models.diffusion.ddim import DDIMSampler, noise_like
 # Adapted from:
 # https://github.com/runwayml/stable-diffusion/blob/main/ldm/models/diffusion/ddim.py
 # =================================================================================================
-import src_plugins.sd1111_plugin.sd_paths
+import src_plugins.sd1111.sd_paths
 
 
 @torch.no_grad()
@@ -334,7 +334,7 @@ class LatentInpaintDiffusion(LatentDiffusion):
 
 
 def should_hijack_inpainting(checkpoint_info):
-    return str(checkpoint_info.filename).endswith("inpainting.ckpt") and not src_plugins.sd1111_plugin.sd_paths.config.endswith("inpainting.yaml")
+    return str(checkpoint_info.filename).endswith("inpainting.ckpt") and not src_plugins.sd1111.sd_paths.config.endswith("inpainting.yaml")
 
 
 def do_inpainting_hijack():

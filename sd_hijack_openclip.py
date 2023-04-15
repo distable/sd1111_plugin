@@ -2,8 +2,8 @@
 import torch
 
 from src_core.lib import devices
-from src_plugins.sd1111_plugin import sd_hijack_clip
-from src_plugins.sd1111_plugin.options import opts
+from src_plugins.sd1111 import sd_hijack_clip
+from src_plugins.sd1111.options import opts
 
 # tokenizer = open_clip.tokenizer._tokenizer
 

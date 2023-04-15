@@ -7,4 +7,4 @@ config = paths.plug_repos / 'sd1111' / 'stable_diffusion' / 'configs/stable-diff
 
 
 def res(join=""):
-    return plugins.get_plug('sd1111').res(join)
+    return plugins.get('sd1111').res(join)

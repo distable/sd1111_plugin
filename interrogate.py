@@ -10,11 +10,11 @@ import torch
 from torchvision import transforms
 from torchvision.transforms.functional import InterpolationMode
 
-import src_plugins.sd1111_plugin.__conf__
-import src_plugins.sd1111_plugin.options
-import src_plugins.sd1111_plugin.__conf__
-import src_plugins.sd1111_plugin.SDPlugin
-import src_plugins.sd1111_plugin.modelsplit
+import src_plugins.sd1111.__conf__
+import src_plugins.sd1111.options
+import src_plugins.sd1111.__conf__
+import src_plugins.sd1111.SDPlugin
+import src_plugins.sd1111.modelsplit
 
 blip_image_eval_size = 384
 blip_model_url = 'https://storage.googleapis.com/sfr-vision-language-research/BLIP/models/model_base_caption_capfilt_large.pth'
@@ -71,14 +71,14 @@ class InterrogateModels:
     def load(self):
         if self.blip_model is None:
             self.blip_model = self.load_blip_model()
-            if not src_plugins.sd1111_plugin.__conf__.no_half and not self.running_on_cpu:
+            if not src_plugins.sd1111.__conf__.no_half and not self.running_on_cpu:
                 self.blip_model = self.blip_model.half()
 
         self.blip_model = self.blip_model.to(devices.device_interrogate)
 
         if self.clip_model is None:
             self.clip_model, self.clip_preprocess = self.load_clip_model()
-            if not src_plugins.sd1111_plugin.__conf__.no_half and not self.running_on_cpu:
+            if not src_plugins.sd1111.__conf__.no_half and not self.running_on_cpu:
                 self.clip_model = self.clip_model.half()
 
         self.clip_model = self.clip_model.to(devices.device_interrogate)
@@ -86,12 +86,12 @@ class InterrogateModels:
         self.dtype = next(self.clip_model.parameters()).dtype
 
     def send_clip_to_ram(self):
-        if not src_plugins.sd1111_plugin.options.opts.interrogate_keep_models_in_memory:
+        if not src_plugins.sd1111.options.opts.interrogate_keep_models_in_memory:
             if self.clip_model is not None:
                 self.clip_model = self.clip_model.to(devices.cpu)
 
     def send_blip_to_ram(self):
-        if not src_plugins.sd1111_plugin.options.opts.interrogate_keep_models_in_memory:
+        if not src_plugins.sd1111.options.opts.interrogate_keep_models_in_memory:
             if self.blip_model is not None:
                 self.blip_model = self.blip_model.to(devices.cpu)
 
@@ -104,8 +104,8 @@ class InterrogateModels:
     def rank(self, image_features, text_array, top_count=1):
         import clip
 
-        if src_plugins.sd1111_plugin.options.opts.interrogate_clip_dict_limit != 0:
-            text_array = text_array[0:int(src_plugins.sd1111_plugin.options.opts.interrogate_clip_dict_limit)]
+        if src_plugins.sd1111.options.opts.interrogate_clip_dict_limit != 0:
+            text_array = text_array[0:int(src_plugins.sd1111.options.opts.interrogate_clip_dict_limit)]
 
         top_count = min(top_count, len(text_array))
         text_tokens = clip.tokenize([text for text in text_array], truncate=True).to(devices.device_interrogate)
@@ -128,7 +128,7 @@ class InterrogateModels:
         ])(pil_image).unsqueeze(0).type(self.dtype).to(devices.device_interrogate)
 
         with torch.no_grad():
-            caption = self.blip_model.generate(gpu_image, sample=False, num_beams=src_plugins.sd1111_plugin.options.opts.interrogate_clip_num_beams, min_length=src_plugins.sd1111_plugin.options.opts.interrogate_clip_min_length, max_length=src_plugins.sd1111_plugin.options.opts.interrogate_clip_max_length)
+            caption = self.blip_model.generate(gpu_image, sample=False, num_beams=src_plugins.sd1111.options.opts.interrogate_clip_num_beams, min_length=src_plugins.sd1111.options.opts.interrogate_clip_min_length, max_length=src_plugins.sd1111.options.opts.interrogate_clip_max_length)
 
         return caption[0]
 
@@ -137,7 +137,7 @@ class InterrogateModels:
 
         try:
 
-            if src_plugins.sd1111_plugin.__conf__.lowvram or src_plugins.sd1111_plugin.__conf__.medvram:
+            if src_plugins.sd1111.__conf__.lowvram or src_plugins.sd1111.__conf__.medvram:
                 lowvram.send_everything_to_cpu()
                 devices.torch_gc()
 
@@ -151,13 +151,13 @@ class InterrogateModels:
 
             clip_image = self.clip_preprocess(pil_image).unsqueeze(0).type(self.dtype).to(devices.device_interrogate)
 
-            precision_scope = torch.autocast if src_plugins.sd1111_plugin.__conf__.precision == "autocast" else contextlib.nullcontext
+            precision_scope = torch.autocast if src_plugins.sd1111.__conf__.precision == "autocast" else contextlib.nullcontext
             with torch.no_grad(), precision_scope("cuda"):
                 image_features = self.clip_model.encode_image(clip_image).type(self.dtype)
 
                 image_features /= image_features.norm(dim=-1, keepdim=True)
 
-                if src_plugins.sd1111_plugin.options.opts.interrogate_use_builtin_artists:
+                if src_plugins.sd1111.options.opts.interrogate_use_builtin_artists:
                     artist = self.rank(image_features, ["by " + artist.name for artist in SDPlugin.artist_db.artists])[0]
 
                     res += ", " + artist[0]
@@ -165,7 +165,7 @@ class InterrogateModels:
                 for name, topn, items in self.categories:
                     matches = self.rank(image_features, items, top_count=topn)
                     for match, score in matches:
-                        if src_plugins.sd1111_plugin.options.opts.interrogate_return_ranks:
+                        if src_plugins.sd1111.options.opts.interrogate_return_ranks:
                             res += f", ({match}:{score/100:.3f})"
                         else:
                             res += ", " + match

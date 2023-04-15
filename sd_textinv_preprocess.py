@@ -6,9 +6,9 @@ import sys
 import tqdm
 import time
 
-from src_plugins.sd1111_plugin import SDPlugin, images
-from src_plugins.sd1111_plugin.SDPlugin import cmd_opts
-from src_plugins.sd1111_plugin.options import opts
+from src_plugins.sd1111 import SDPlugin, images
+from src_plugins.sd1111.SDPlugin import cmd_opts
+from src_plugins.sd1111.options import opts
 
 
 # if cmd_opts.deepdanbooru:

@@ -9,8 +9,8 @@ from torchvision import transforms
 import random
 import tqdm
 
-import src_plugins.sd1111_plugin.options
-import src_plugins.sd1111_plugin.SDState
+import src_plugins.sd1111.options
+import src_plugins.sd1111.SDState
 from src_core.lib import devices
 import re
 
@@ -28,7 +28,7 @@ class DatasetEntry:
 
 class PersonalizedBase(Dataset):
     def __init__(self, data_root, width, height, repeats, flip_p=0.5, placeholder_token="*", model=None, device=None, template_file=None, include_cond=False, batch_size=1):
-        re_word = re.compile(src_plugins.sd1111_plugin.options.opts.dataset_filename_word_regex) if len(src_plugins.sd1111_plugin.options.opts.dataset_filename_word_regex) > 0 else None
+        re_word = re.compile(src_plugins.sd1111.options.opts.dataset_filename_word_regex) if len(src_plugins.sd1111.options.opts.dataset_filename_word_regex) > 0 else None
 
         self.placeholder_token = placeholder_token
 
@@ -46,8 +46,8 @@ class PersonalizedBase(Dataset):
 
         assert data_root, 'dataset directory not specified'
 
-        from src_plugins.sd1111_plugin import SDPlugin
-        cond_model = src_plugins.sd1111_plugin.SDState.sdmodel.cond_stage_model
+        from src_plugins.sd1111 import SDPlugin
+        cond_model = src_plugins.sd1111.SDState.sdmodel.cond_stage_model
 
         self.image_paths = [os.path.join(data_root, file_path) for file_path in os.listdir(data_root)]
         print("Preparing dataset...")
@@ -68,7 +68,7 @@ class PersonalizedBase(Dataset):
                 filename_text = re.sub(re_numbers_at_start, '', filename_text)
                 if re_word:
                     tokens = re_word.findall(filename_text)
-                    filename_text = (src_plugins.sd1111_plugin.options.opts.dataset_filename_join_string or "").join(tokens)
+                    filename_text = (src_plugins.sd1111.options.opts.dataset_filename_join_string or "").join(tokens)
 
             npimage = np.array(image).astype(np.uint8)
             npimage = (npimage / 127.5 - 1.0).astype(np.float32)

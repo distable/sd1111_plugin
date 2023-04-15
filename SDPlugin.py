@@ -3,15 +3,15 @@ import os
 import re
 from pathlib import Path
 
-import src_plugins.sd1111_plugin.SDState
-import user_conf
+import src_plugins.sd1111.SDState
+import userconf
 from src_core.lib.corelib import to_dict
 from src_core.plugins import plugjob
 from src_core.classes.Plugin import Plugin
 # Options
-from src_plugins.sd1111_plugin import __conf__, safe, sd_job, sd_paths
+from src_plugins.sd1111.import __conf__, safe, sd_job, sd_paths
 from src_core.lib import devices
-from src_plugins.sd1111_plugin.SDAttention import SDAttention
+from src_plugins.sd1111.SDAttention import SDAttention
 
 # Arguments
 # ----------------------------------------
@@ -23,14 +23,14 @@ cmd_opts = parser.parse_args()
 # ----------------------------------------
 
 safe.run(devices.enable_tf32, "Enabling TF32")
-devices.set(devices.get_optimal_device(), user_conf.precision)
+devices.set(devices.get_optimal_device(), userconf.precision)
 
 # State
 # ----------------------------------------
 
-from src_plugins.sd1111_plugin import sd_hypernetwork, sd_models
-from src_plugins.sd1111_plugin import sd_hijack
-from src_plugins.sd1111_plugin.sd_job import sd_img, sd_txt
+from src_plugins.sd1111.import sd_hypernetwork, sd_models
+from src_plugins.sd1111.import sd_hijack
+from src_plugins.sd1111.sd_job import sd_img, sd_txt
 
 
 class sd_auto(sd_img, sd_txt):
@@ -48,7 +48,7 @@ class SDPlugin(Plugin):
         return "Stable Diffusion plugin adapted from AUTOMATIC1111's code."
 
     def init(self):
-        src_plugins.sd1111_plugin.SDState.instance = self
+        src_plugins.sd1111.SDState.instance = self
 
     def enable_midas_autodownload(self):
         """

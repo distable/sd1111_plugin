@@ -9,10 +9,10 @@ from omegaconf import OmegaConf
 
 from src_core import plugins
 from . import __conf__
-from src_plugins.sd1111_plugin.sd_hijack_inpainting import do_inpainting_hijack, should_hijack_inpainting
+from src_plugins.sd1111.sd_hijack_inpainting import do_inpainting_hijack, should_hijack_inpainting
 from src_core.lib import devices, modellib
 from src_core.classes.printlib import printerr
-from src_plugins.sd1111_plugin import options, sd_paths, SDState
+from src_plugins.sd1111 import options, sd_paths, SDState
 
 g_infos = {}
 g_loaded = collections.OrderedDict()
@@ -33,15 +33,15 @@ def checkpoint_titles():
 
 def discover_sdmodels():
     g_infos.clear()
-    all_paths = modellib.discover_models(model_dir=plugins.get_plug('sd1111').res(),
-                                         command_path=plugins.get_plug('sd1111').res(),
+    all_paths = modellib.discover_models(model_dir=plugins.get('sd1111').res(),
+                                         command_path=plugins.get('sd1111').res(),
                                          ext_filter=[".ckpt"])
 
     def modeltitle(path, shorthash):
         return f'{Path(path).name} [{shorthash}]', Path(path).with_suffix("").name
 
 
-    cmd_ckpt = plugins.get_plug('sd1111').res(__conf__.res_ckpt)
+    cmd_ckpt = plugins.get('sd1111').res(__conf__.res_ckpt)
     if os.path.exists(cmd_ckpt):
         h = get_model_hash(cmd_ckpt)
         title, short_model_name = modeltitle(cmd_ckpt, h)
@@ -90,7 +90,7 @@ def get_checkpoint(path=None):
 
     if len(g_infos) == 0:
         printerr(f"No checkpoints found. When searching for checkpoints, looked at:")
-        ckpt = plugins.get_plug('sd1111').res(__conf__.res_ckpt)
+        ckpt = plugins.get('sd1111').res(__conf__.res_ckpt)
         if ckpt is not None:
             printerr(f" - file {os.path.abspath(ckpt)}")
         printerr(f" - directory {sd_paths.res()}")
@@ -156,7 +156,7 @@ def load_model_weights(model, info):
 
         vae_file = os.path.splitext(path)[0] + ".vae.pt"
         if not os.path.exists(vae_file):
-            vae_file = plugins.get_plug('sd1111').res(__conf__.res_vae)
+            vae_file = plugins.get('sd1111').res(__conf__.res_vae)
 
         if os.path.exists(vae_file):
             print(f"{vae_file}")
@@ -180,7 +180,7 @@ def load_model_weights(model, info):
 
 
 def load_sdmodel(info=None):
-    from src_plugins.sd1111_plugin import sd_hijack, modelsplit
+    from src_plugins.sd1111 import sd_hijack, modelsplit
     info = info or get_checkpoint()
 
     if info.config != sd_paths.config:

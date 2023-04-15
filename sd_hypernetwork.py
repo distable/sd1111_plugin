@@ -11,12 +11,12 @@ from einops import rearrange, repeat
 from torch import einsum
 
 import src_core.classes.paths
-import src_plugins.sd1111_plugin.sd_paths
-import src_plugins.sd1111_plugin.sd_textinv_dataset
-import src_plugins.sd1111_plugin.SDState
-from src_plugins.sd1111_plugin import sd_models, __conf__, SDState
+import src_plugins.sd1111.sd_paths
+import src_plugins.sd1111.sd_textinv_dataset
+import src_plugins.sd1111.SDState
+from src_plugins.sd1111 import sd_models, __conf__, SDState
 from src_core.lib import devices
-from src_plugins.sd1111_plugin.sd_textinv_learn_schedule import LearnRateScheduler
+from src_plugins.sd1111.sd_textinv_learn_schedule import LearnRateScheduler
 
 hypernetworks: dict[str, Path] | None = None
 hnmodel = None
@@ -81,7 +81,7 @@ class HypernetworkModule(torch.nn.Module):
         }
 
         for fr, to in changes.items():
-            x = state_dict.get_plug(fr, None)
+            x = state_dict.get(fr, None)
             if x is None:
                 continue
 
@@ -159,10 +159,10 @@ class Hypernetwork:
 
         state_dict = torch.load(filename, map_location='cpu')
 
-        self.layer_structure = state_dict.get_plug('layer_structure', [1, 2, 1])
-        self.activation_func = state_dict.get_plug('activation_func', None)
-        self.add_layer_norm = state_dict.get_plug('is_layer_norm', False)
-        self.use_dropout = state_dict.get_plug('use_dropout', False)
+        self.layer_structure = state_dict.get('layer_structure', [1, 2, 1])
+        self.activation_func = state_dict.get('activation_func', None)
+        self.add_layer_norm = state_dict.get('is_layer_norm', False)
+        self.use_dropout = state_dict.get('use_dropout', False)
 
         for size, sd in state_dict.items():
             if type(size) == int:
@@ -171,10 +171,10 @@ class Hypernetwork:
                     HypernetworkModule(size, sd[1], self.layer_structure, self.activation_func, self.add_layer_norm, self.use_dropout),
                 )
 
-        self.name = state_dict.get_plug('name', self.name)
-        self.step = state_dict.get_plug('step', 0)
-        self.sd_checkpoint = state_dict.get_plug('sd_checkpoint', None)
-        self.sd_checkpoint_name = state_dict.get_plug('sd_checkpoint_name', None)
+        self.name = state_dict.get('name', self.name)
+        self.step = state_dict.get('step', 0)
+        self.sd_checkpoint = state_dict.get('sd_checkpoint', None)
+        self.sd_checkpoint_name = state_dict.get('sd_checkpoint_name', None)
 
 
 def discover_hypernetworks(dirpath) -> dict[str, Path]:
@@ -307,7 +307,7 @@ def report_statistics(loss_info: dict):
 
 def train_hypernetwork(hypernetwork_name, learn_rate, batch_size, data_root, log_directory, training_width, training_height, steps, create_image_every, save_hypernetwork_every, template_file, preview_from_txt2img, preview_prompt, preview_negative_prompt, preview_steps, preview_sampler_index, preview_cfg_scale, preview_seed, preview_width, preview_height):
     # images allows training previews to have infotext. Importing it at the top causes a circular import problem.
-    from src_plugins.sd1111_plugin import images
+    from src_plugins.sd1111 import images
 
     assert hypernetwork_name, 'hypernetwork not selected'
 
@@ -414,7 +414,7 @@ def train_hypernetwork(hypernetwork_name, learn_rate, batch_size, data_root, log
             last_saved_file = os.path.join(hypernetwork_dir, f'{hypernetwork.name}.pt')
             hypernetwork.save(last_saved_file)
 
-        from src_plugins.sd1111_plugin import sd_textinv
+        from src_plugins.sd1111 import sd_textinv
         sd_textinv.write_loss(log_directory, "hypernetwork_loss.csv", hypernetwork.step, len(ds), {
             "loss"      : f"{previous_mean_loss:.7f}",
             "learn_rate": scheduler.learn_rate
@@ -428,7 +428,7 @@ def train_hypernetwork(hypernetwork_name, learn_rate, batch_size, data_root, log
             SDState.sdmodel.cond_stage_model.to(devices.device)
             SDState.sdmodel.first_stage_model.to(devices.device)
 
-            from src_plugins.sd1111_plugin.sd_job import process_images, sd_txt
+            from src_plugins.sd1111.sd_job import process_images, sd_txt
             p = sd_txt(
                     sd_model=SDState.sdmodel,
                     do_not_save_grid=True,

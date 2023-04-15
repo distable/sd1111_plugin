@@ -4,7 +4,7 @@ import torch
 
 from . import prompt_parser
 from src_core.lib import devices
-from src_plugins.sd1111_plugin import __conf__
+from src_plugins.sd1111 import __conf__
 
 
 def get_target_prompt_token_count(token_count):

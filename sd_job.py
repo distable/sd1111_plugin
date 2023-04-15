@@ -7,12 +7,12 @@ import torch
 from einops import rearrange, repeat
 from PIL import Image, ImageFilter, ImageOps
 
-import src_plugins.sd1111_plugin.__conf__
+import src_plugins.sd1111.__conf__
 from src_core import plugins
 # some of those options should not be changed at all because they would break the model, so I removed them from options.
-from src_plugins.sd1111_plugin import images, masking, modelsplit, prompt_parser, sd_hijack, SDState
+from src_plugins.sd1111 import images, masking, modelsplit, prompt_parser, sd_hijack, SDState
 from src_core.lib import devices, imagelib
-from src_plugins.sd1111_plugin.options import opts
+from src_plugins.sd1111.options import opts
 from src_core.classes.prompt_job import prompt_job
 
 # from ldm.data.util import AddMiDaS
@@ -203,7 +203,7 @@ class sd_txt(sd_job):
         self.dev = False
 
     def init(self, model, all_prompts, all_seeds, all_subseeds):
-        from src_plugins.sd1111_plugin import sd_samplers
+        from src_plugins.sd1111 import sd_samplers
 
         self.sdmodel = model
         self.sampler = sd_samplers.create_sampler(self.sampler_id, model)
@@ -260,7 +260,7 @@ class sd_txt(sd_job):
 
 
     def sample(self, conditioning, unconditional_conditioning, seeds, subseeds, subseed_strength):
-        from src_plugins.sd1111_plugin import sd_samplers
+        from src_plugins.sd1111 import sd_samplers
 
         self.sampler = sd_samplers.create_sampler(self.sampler_id, self.sdmodel)
 
@@ -368,7 +368,7 @@ class sd_img(sd_job):
         self.overlay_mask = None  # TODO idk what overlay is
 
     def init(self, model, all_prompts, all_seeds, all_subseeds):
-        from src_plugins.sd1111_plugin import sd_samplers
+        from src_plugins.sd1111 import sd_samplers
 
         self.sdmodel = model
         self.sampler = sd_samplers.create_sampler(self.sampler_id, model)
@@ -588,7 +588,7 @@ def process_images(j: sd_job):
 
         del samples_ddim
 
-        if src_plugins.sd1111_plugin.__conf__.lowvram or src_plugins.sd1111_plugin.__conf__.medvram:
+        if src_plugins.sd1111.__conf__.lowvram or src_plugins.sd1111.__conf__.medvram:
             modelsplit.send_everything_to_cpu()
 
         devices.torch_gc()
