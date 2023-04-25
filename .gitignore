@@ -16,6 +16,7 @@ __pycache__
 /plug-res/plug-models
 /plug-res/plug-embeddings
 /plug-repos
+/plug_repos
 /styles.csv
 /styles.csv.bak
 /webui-user.bat
